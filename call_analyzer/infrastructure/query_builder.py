@@ -134,17 +134,18 @@ class QueryBuilder:
 
     @staticmethod
     def build_internal_numbers_query() -> str:
-        """Construit une requête SQL pour récupérer les numéros internes.
+        """Construit une requête GQL pour récupérer les numéros internes: Extensions et Ringroups.
 
         Returns:
-            Requête SQL formatée
+            Requête GQL formatée
         """
-        return """
-               SELECT DISTINCT src AS number \
-               FROM asteriskcdrdb.cdr
-               WHERE LENGTH(src) <= 5
-               UNION
-               SELECT DISTINCT dst AS number \
-               FROM asteriskcdrdb.cdr
-               WHERE LENGTH(dst) <= 5 \
-               """
+        return "query { fetchAllExtensions { status message totalCount extension { extensionId } }  fetchAllRingGroups { status message totalCount ringgroups { groupNumber } }}"
+
+    @staticmethod
+    def build_extensions_query() -> str:
+        """Construit une requête GQL pour récupérer les extensions et leurs noms.
+
+        Returns:
+            Requête GQL formatée
+        """
+        return "query { fetchAllExtensions { status message totalCount extension { extensionId, user {name}} } }"

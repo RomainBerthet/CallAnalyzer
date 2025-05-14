@@ -6,6 +6,7 @@ import pandas as pd
 
 from call_analyzer.infrastructure.db_connector import DatabaseConnector
 from call_analyzer.infrastructure.excel_reporter import ExcelExporter
+from call_analyzer.infrastructure.gql_connector import GqlConnector
 from call_analyzer.infrastructure.query_builder import QueryBuilder
 from call_analyzer.services.call_analyzer import CallAnalyzer
 from call_analyzer.services.statistics import StatisticsGenerator
@@ -37,6 +38,12 @@ class CDRAnalyzerApp:
             port=config['db_port'],
             charset=config.get('db_charset')
         )
+        self.gql_connector = GqlConnector(
+            hostname=config['db_host'],
+            client_id=config['client_id'],
+            client_secret=config['client_secret'],
+            scope=config.get('scope')
+        )
         self.reference_numbers = config.get('reference_numbers', [])
         self.internal_numbers = set()
         self.extensions_dict = {}
@@ -45,8 +52,10 @@ class CDRAnalyzerApp:
         """Charge les numéros internes depuis la base de données."""
         try:
             query = QueryBuilder.build_internal_numbers_query()
-            df = self.db_connector.execute_query(query)
-            self.internal_numbers = set(df['number'])
+            result = self.gql_connector.execute_query(query)
+            extensions = map(lambda x: x['extensionId'], result['data']['fetchAllExtensions']['extension'])
+            ring_groups = map(lambda x: str(x['groupNumber']), result['data']['fetchAllRingGroups']['groupNumber'])
+            self.internal_numbers = set(extensions).union(set(ring_groups))
             logger.info(f"Chargement réussi de {len(self.internal_numbers)} numéros internes")
         except Exception as e:
             logger.error(f"Erreur lors du chargement des numéros internes: {e}")
@@ -56,8 +65,10 @@ class CDRAnalyzerApp:
         """Charge les extensions et leurs noms depuis la base de données."""
         try:
             query = QueryBuilder.build_extensions_query()
-            df = self.db_connector.execute_query(query)
-            self.extensions_dict = dict(zip(df['extension'], df['name']))
+            result = self.gql_connector.execute_query(query)
+            result_dict = result['data']['fetchAllExtensions']['extension']
+            df = pd.json_normalize(result_dict)
+            self.extensions_dict = dict(zip(df['extensionId'], df['user']['name']))
             logger.info(f"Chargement réussi de {len(self.extensions_dict)} extensions avec noms")
         except Exception as e:
             logger.warning(f"Erreur lors du chargement des extensions: {e}")
