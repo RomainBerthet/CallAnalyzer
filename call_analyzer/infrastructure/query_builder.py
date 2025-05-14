@@ -139,13 +139,4 @@ class QueryBuilder:
         Returns:
             Requête GQL formatée
         """
-        return "query { fetchAllExtensions { status message totalCount extension { extensionId } }  fetchAllRingGroups { status message totalCount ringgroups { groupNumber } }}"
-
-    @staticmethod
-    def build_extensions_query() -> str:
-        """Construit une requête GQL pour récupérer les extensions et leurs noms.
-
-        Returns:
-            Requête GQL formatée
-        """
-        return "query { fetchAllExtensions { status message totalCount extension { extensionId, user {name}} } }"
+        return "query { fetchAllExtensions { status message totalCount extension { extensionId, user {name} } }  fetchAllRingGroups { status message totalCount ringgroups { groupNumber description } }}"

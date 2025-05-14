@@ -21,27 +21,7 @@ class StatisticsGenerator:
             Dictionnaire contenant les statistiques
         """
         if df.empty:
-            return {
-                'nb_appels_total': 0,
-                'nb_appels_recus': 0,
-                'nb_appels_emis': 0,
-                'nb_appels_internes': 0,
-                'nb_appels_manques': 0,
-                'nb_appels_aboutis': 0,
-                'duree_appels_total': 0,
-                'duree_appels_recus': 0,
-                'duree_appels_emis': 0,
-                'duree_moyenne_appels': 0,
-                'nb_renvoi_appel_recus': 0,
-                'duree_renvoi_appel_recus': 0,
-                'nb_renvoi_appel_emis': 0,
-                'duree_renvoi_appel_emis': 0,
-                'nb_appel_interne_recus': 0,
-                'duree_appels_interne_recus': 0,
-                'nb_appel_interne_emis': 0,
-                'duree_appels_interne_emis': 0,
-                'nb_click_to_call': 0,
-            }
+            return StatisticsGenerator.get_empty_statistics()
 
         # Filtrage du dataframe selon les numéros de référence si nécessaire
         if not reference_numbers:
@@ -55,21 +35,37 @@ class StatisticsGenerator:
             'nb_appels_total': len(df),
             'nb_appels_recus': len(df[df['type_appel'] == 'entrant']),
             'nb_appels_emis': len(df[df['type_appel'] == 'sortant']),
-            'nb_appels_internes': len(df[df['type_appel'] == 'interne']),
-            'nb_appels_manques': len(df[(df['type_appel'] == 'entrant') & (~df['answered'])]),
-            'nb_appels_aboutis': len(df[(df['type_appel'] == 'sortant') & df['answered']]),
-            'duree_appels_total': int(df['billsec'].sum()),
-            'duree_appels_recus': int(df.loc[df['type_appel'] == 'entrant', 'billsec'].sum()),
-            'duree_appels_emis': int(df.loc[df['type_appel'] == 'sortant', 'billsec'].sum()),
-            'duree_moyenne_appels': int(df.loc[df['answered'], 'billsec'].mean()) if len(df[df['answered']]) > 0 else 0,
-            'nb_renvoi_appel_recus': len(df[(df['type_appel'] == 'entrant') & df['renvoi_vers'].notna()]),
-            'duree_renvoi_appel_recus': int(df.loc[(df['type_appel'] == 'entrant') & df['renvoi_vers'].notna(), 'billsec'].sum()),
-            'nb_renvoi_appel_emis': len(df[(df['type_appel'] == 'sortant') & df['renvoi_vers'].notna()]),
-            'duree_renvoi_appel_emis': int(df.loc[(df['type_appel'] == 'sortant') & df['renvoi_vers'].notna(), 'billsec'].sum()),
-            'nb_appel_interne_recus': len(df[(df['type_appel'] == 'entrant') & df['is_internal']]),
-            'duree_appels_interne_recus': int(df.loc[(df['type_appel'] == 'entrant') & df['is_internal'], 'billsec'].sum()),
+
+            'nb_appels_internes': len(df[df['is_internal']]),
             'nb_appel_interne_emis': len(df[(df['type_appel'] == 'sortant') & df['is_internal']]),
-            'duree_appels_interne_emis': int(df.loc[(df['type_appel'] == 'sortant') & df['is_internal'], 'billsec'].sum()),
+            'nb_appel_interne_recus': len(df[(df['type_appel'] == 'entrant') & df['is_internal']]),
+
+            'nb_appels_manques': len(df[(df['type_appel'] == 'entrant') & (~df['answered'])]),
+            'nb_appels_externes_manques': len(df[(df['type_appel'] == 'entrant') & (~df['answered']) & (~df['is_internal'])]),
+            'nb_appels_internes_manques': len(df[(df['type_appel'] == 'entrant') & (~df['answered']) & df['is_internal']]),
+            'nb_appels_internes_repondus': len(df[(df['type_appel'] == 'entrant') & df['answered'] & df['is_internal']]),
+
+            'nb_appels_aboutis': len(df[(df['type_appel'] == 'sortant') & df['answered']]),
+            'nb_appels_externes_aboutis': len(df[(df['type_appel'] == 'sortant') & df['answered'] & (~df['is_internal'])]),
+            'nb_appels_internes_aboutis': len(df[(df['type_appel'] == 'sortant') & df['answered'] & df['is_internal']]),
+
+            'duree_appels_total': int(df['billsec'].sum()),
+
+            'duree_appels_recus': int(df.loc[df['type_appel'] == 'entrant', 'billsec'].sum()),
+            'duree_appels_internes_recus': int(df.loc[(df['type_appel'] == 'entrant') & df['is_internal'], 'billsec'].sum()),
+            'duree_appels_externes_recus': int(df.loc[(df['type_appel'] == 'entrant') & (~df['is_internal']), 'billsec'].sum()),
+
+            'duree_appels_emis': int(df.loc[df['type_appel'] == 'sortant', 'billsec'].sum()),
+            'duree_appels_internes_emis': int(df.loc[(df['type_appel'] == 'sortant') & df['is_internal'], 'billsec'].sum()),
+            'duree_appels_externes_emis': int(df.loc[(df['type_appel'] == 'sortant') & (~df['is_internal']), 'billsec'].sum()),
+
+            'duree_moyenne_appels': int(df.loc[df['answered'], 'billsec'].mean()) if len(df[df['answered']]) > 0 else 0,
+            'duree_moyenne_appels_internes': int(df.loc[(df['answered']) & df['is_internal'], 'billsec'].mean()) if len(df[(df['answered']) & df['is_internal']]) > 0 else 0,
+            'duree_moyenne_appels_externes': int(df.loc[(df['answered']) & (~df['is_internal']), 'billsec'].mean()) if len(df[(df['answered']) & (~df['is_internal'])]) > 0 else 0,
+
+            'nb_renvois_appels_recus': len(df[(df['type_appel'] == 'entrant') & df['renvoi_vers'].notna()]),
+            'duree_renvois_appels_recus': int(df.loc[(df['type_appel'] == 'entrant') & df['renvoi_vers'].notna(), 'billsec'].sum()),
+
             'nb_click_to_call': len(df[df['is_click_to_call']]),
         }
 
@@ -86,21 +82,40 @@ class StatisticsGenerator:
             'nb_appels_total': 0,
             'nb_appels_recus': 0,
             'nb_appels_emis': 0,
+
             'nb_appels_internes': 0,
-            'nb_appels_manques': 0,
-            'nb_appels_aboutis': 0,
-            'duree_appels_total': 0,
-            'duree_appels_recus': 0,
-            'duree_appels_emis': 0,
-            'duree_moyenne_appels': 0,
-            'nb_renvoi_appel_recus': 0,
-            'duree_renvoi_appel_recus': 0,
-            'nb_renvoi_appel_emis': 0,
-            'duree_renvoi_appel_emis': 0,
-            'nb_appel_interne_recus': 0,
-            'duree_appels_interne_recus': 0,
             'nb_appel_interne_emis': 0,
-            'duree_appels_interne_emis': 0,
+            'nb_appel_interne_recus': 0,
+
+            'nb_appels_manques': 0,
+            'nb_appels_externes_manques': 0,
+            'nb_appels_internes_manques': 0,
+            'nb_appels_internes_repondus': 0,
+
+            'nb_appels_aboutis': 0,
+            'nb_appels_externes_aboutis': 0,
+            'nb_appels_internes_aboutis': 0,
+
+            'duree_appels_total': 0,
+
+            'duree_appels_recus': 0,
+            'duree_appels_internes_recus': 0,
+            'duree_appels_externes_recus': 0,
+
+            'duree_appels_emis': 0,
+            'duree_appels_internes_emis': 0,
+            'duree_appels_externes_emis': 0,
+
+            'duree_moyenne_appels': 0,
+            'duree_moyenne_appels_internes': 0,
+            'duree_moyenne_appels_externes': 0,
+
+            'nb_renvois_appels_recus': 0,
+            'duree_renvois_appels_recus': 0,
+
+            'nb_renvois_appels_emis': 0,
+            'duree_renvois_appels_emis': 0,
+
             'nb_click_to_call': 0,
         }
 

@@ -4,6 +4,8 @@ from typing import Dict, Optional, Union
 
 import pandas as pd
 
+from call_analyzer.services.statistics import StatisticsGenerator
+
 logger = logging.getLogger(__name__)
 
 class ExcelExporter:
@@ -57,21 +59,18 @@ class ExcelExporter:
         columns_mapping = {
             'call_date': 'Date et heure',
             'src': 'Source',
-            'src_name': 'Nom source',
+            'original_caller_name': 'Nom appelant',
             'dst': 'Destination',
             'dst_name': 'Nom destination',
             'duree': 'Durée',
             'status': 'Statut',
             'type_appel': 'Type',
             'path': 'Chemin d\'appel',
-            'original_caller_name': 'Nom appelant',
             'renvoi_depuis': 'Renvoi depuis',
             'renvoi_vers': 'Renvoi vers',
             'transfert_depuis': 'Transfert depuis',
             'transfert_vers': 'Transfert vers',
             'did': 'DID',
-            'accountcode': 'Code compte',
-            'userfield': 'Champ utilisateur'
         }
 
         # Sélection des colonnes qui existent dans le DataFrame
@@ -133,16 +132,31 @@ class ExcelExporter:
                 {'Métrique': 'Période', 'Valeur': period},
                 {'Métrique': 'Nombre total d\'appels', 'Valeur': statistics['nb_appels_total']},
                 {'Métrique': 'Appels reçus', 'Valeur': statistics['nb_appels_recus']},
+                {'Métrique': 'Appels reçus internes', 'Valeur': statistics['nb_appel_interne_recus']},
+                {'Métrique': 'Appels reçus externes', 'Valeur': statistics['nb_appels_recus'] - statistics['nb_appel_interne_recus']},
                 {'Métrique': 'Appels émis', 'Valeur': statistics['nb_appels_emis']},
+                {'Métrique': 'Appels émis internes', 'Valeur': statistics['nb_appel_interne_emis']},
+                {'Métrique': 'Appels émis externes', 'Valeur': statistics['nb_appels_emis'] - statistics['nb_appel_interne_emis']},
                 {'Métrique': 'Appels internes', 'Valeur': statistics['nb_appels_internes']},
                 {'Métrique': 'Appels manqués', 'Valeur': statistics['nb_appels_manques']},
+                {'Métrique': 'Appels manqués internes', 'Valeur': statistics['nb_appels_internes_manques']},
+                {'Métrique': 'Appels manqués externes', 'Valeur': statistics['nb_appels_externes_manques']},
                 {'Métrique': 'Taux de réponse', 'Valeur': f"{(statistics['nb_appels_recus'] - statistics['nb_appels_manques']) / statistics['nb_appels_recus'] * 100:.1f}%" if statistics['nb_appels_recus'] > 0 else "N/A"},
                 {'Métrique': 'Durée totale des appels', 'Valeur': ExcelExporter.format_duration(statistics['duree_appels_total'])},
                 {'Métrique': 'Durée des appels reçus', 'Valeur': ExcelExporter.format_duration(statistics['duree_appels_recus'])},
+                {'Métrique': 'Durée des appels reçus internes', 'Valeur': ExcelExporter.format_duration(statistics['duree_appels_internes_recus'])},
+                {'Métrique': 'Durée des appels reçus externes', 'Valeur': ExcelExporter.format_duration(statistics['duree_appels_externes_recus'])},
                 {'Métrique': 'Durée des appels émis', 'Valeur': ExcelExporter.format_duration(statistics['duree_appels_emis'])},
+                {'Métrique': 'Durée des appels émis internes', 'Valeur': ExcelExporter.format_duration(statistics['duree_appels_internes_emis'])},
+                {'Métrique': 'Durée des appels émis externes', 'Valeur': ExcelExporter.format_duration(statistics['duree_appels_externes_emis'])},
                 {'Métrique': 'Durée moyenne des appels', 'Valeur': ExcelExporter.format_duration(statistics['duree_moyenne_appels'])},
-                {'Métrique': 'Appels avec renvoi reçus', 'Valeur': statistics['nb_renvoi_appel_recus']},
-                {'Métrique': 'Appels avec renvoi émis', 'Valeur': statistics['nb_renvoi_appel_emis']},
+                {'Métrique': 'Durée moyenne des appels internes', 'Valeur': ExcelExporter.format_duration(statistics['duree_moyenne_appels_internes'])},
+                {'Métrique': 'Durée moyenne des appels externes', 'Valeur': ExcelExporter.format_duration(statistics['duree_moyenne_appels_externes'])},
+                {'Métrique': 'Appels internes émis aboutis', 'Valeur': statistics['nb_appels_internes_aboutis']},
+                {'Métrique': 'Appels externes émis aboutis', 'Valeur': statistics['nb_appels_externes_aboutis']},
+                {'Métrique': 'Appels internes reçus répondus', 'Valeur': statistics['nb_appels_internes_repondus']},
+                {'Métrique': 'Nombre de renvois d\'appels', 'Valeur': statistics['nb_renvois_appels_recus']},
+                {'Métrique': 'Durée des renvois d\'appels', 'Valeur': ExcelExporter.format_duration(statistics['duree_renvois_appels_recus'])},
                 {'Métrique': 'Appels Click-to-Call', 'Valeur': statistics['nb_click_to_call']}
             ]
         }

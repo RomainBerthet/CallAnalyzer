@@ -53,25 +53,19 @@ class CDRAnalyzerApp:
         try:
             query = QueryBuilder.build_internal_numbers_query()
             result = self.gql_connector.execute_query(query)
-            extensions = map(lambda x: x['extensionId'], result['data']['fetchAllExtensions']['extension'])
-            ring_groups = map(lambda x: str(x['groupNumber']), result['data']['fetchAllRingGroups']['groupNumber'])
+            extensions = list(map(lambda x: x['extensionId'], result['fetchAllExtensions.extension'][0]))
+            ring_groups = list(map(lambda x: str(x['groupNumber']), result['fetchAllRingGroups.ringgroups'][0]))
             self.internal_numbers = set(extensions).union(set(ring_groups))
             logger.info(f"Chargement réussi de {len(self.internal_numbers)} numéros internes")
+            result_extensions_dict = result['fetchAllExtensions.extension'][0]
+            df = pd.json_normalize(result_extensions_dict)
+            self.extensions_dict = dict(zip(df['extensionId'], df['user.name']))
+            result_ring_groups_dict = result['fetchAllRingGroups.ringgroups'][0]
+            df = pd.json_normalize(result_ring_groups_dict)
+            self.extensions_dict.update(dict(zip(df['groupNumber'].astype(str), df['description'])))
         except Exception as e:
             logger.error(f"Erreur lors du chargement des numéros internes: {e}")
             self.internal_numbers = set()
-
-    def _load_extensions(self):
-        """Charge les extensions et leurs noms depuis la base de données."""
-        try:
-            query = QueryBuilder.build_extensions_query()
-            result = self.gql_connector.execute_query(query)
-            result_dict = result['data']['fetchAllExtensions']['extension']
-            df = pd.json_normalize(result_dict)
-            self.extensions_dict = dict(zip(df['extensionId'], df['user']['name']))
-            logger.info(f"Chargement réussi de {len(self.extensions_dict)} extensions avec noms")
-        except Exception as e:
-            logger.warning(f"Erreur lors du chargement des extensions: {e}")
             self.extensions_dict = {}
 
     def run_analysis(self, date_debut: str, date_fin: str, output_dir: str = './output') -> Dict[str, str]:
@@ -90,7 +84,6 @@ class CDRAnalyzerApp:
 
         # Chargement des numéros internes et extensions
         self._load_internal_numbers()
-        self._load_extensions()
 
         # Construction de la requête et exécution
         query = QueryBuilder.build_call_query(date_debut, date_fin, self.reference_numbers)

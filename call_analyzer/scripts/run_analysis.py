@@ -12,3 +12,6 @@ def main():
     analyzer_app = CDRAnalyzerApp(config)
 
     analyzer_app.run_analysis(date_debut, date_fin, output_dir)
+
+if __name__ == '__main__':
+    main()
