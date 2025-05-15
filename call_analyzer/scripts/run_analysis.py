@@ -6,12 +6,9 @@ def main():
     # Dates d'analyse
     date_debut = '2025-05-01 00:00:00'
     date_fin = '2025-05-31 23:59:59'
-    # Répertoire de sortie
-    output_dir = './output'
     # Création de l'application d'analyse
     analyzer_app = CDRAnalyzerApp(config)
-
-    analyzer_app.run_analysis(date_debut, date_fin, output_dir)
+    statistics = analyzer_app.run_analysis(date_debut, date_fin)
 
 if __name__ == '__main__':
     main()

@@ -68,13 +68,14 @@ class CDRAnalyzerApp:
             self.internal_numbers = set()
             self.extensions_dict = {}
 
-    def run_analysis(self, date_debut: str, date_fin: str, output_dir: str = './output') -> Dict[str, str]:
+    def run_analysis(self, date_debut: str, date_fin: str, export: bool = False, output_dir: str = './output') -> Dict[str, str] or Dict:
         """Exécute l'analyse complète des appels.
 
         Args:
             date_debut: Date de début de l'analyse
             date_fin: Date de fin de l'analyse
             output_dir: Répertoire de sortie pour les fichiers générés
+            export: Indique si les résultats doivent être exportés vers Excel
 
         Returns:
             Dictionnaire contenant les chemins des fichiers générés
@@ -107,6 +108,9 @@ class CDRAnalyzerApp:
         # Génération des statistiques
         statistics = StatisticsGenerator.calculate_statistics(df_analyzed, self.reference_numbers)
 
+        if not export:
+            return statistics
+
         # Formatage de la période pour les noms de fichiers
         period_str = f"{pd.to_datetime(date_debut).strftime('%Y%m%d')}-{pd.to_datetime(date_fin).strftime('%Y%m%d')}"
         period_display = f"{pd.to_datetime(date_debut).strftime('%d/%m/%Y')} au {pd.to_datetime(date_fin).strftime('%d/%m/%Y')}"
@@ -124,4 +128,4 @@ class CDRAnalyzerApp:
         logger.info(f"Analyse terminée: {len(calls)} appels analysés")
         logger.info(f"Fichiers générés: {files}")
 
-        return files
+        return statistics, files
