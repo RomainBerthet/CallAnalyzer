@@ -116,9 +116,9 @@ class CallAnalyzer:
                     return 'entrant'
             return 'interne'
 
-        if any('trunk' in e.channel for e in events):
+        if any('trunk' in e.channel.lower() for e in events):
             return 'entrant'
-        if any('trunk' in e.dstchannel for e in events):
+        if any('trunk' in e.dstchannel.lower() for e in events):
             return 'sortant'
 
         return 'interne'
