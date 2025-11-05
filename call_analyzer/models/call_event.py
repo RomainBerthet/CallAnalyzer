@@ -32,14 +32,12 @@ class CallEvent:
     billsec: int  # Durée facturable en secondes
     duration: Optional[int] = None  # Durée totale en secondes
 
-    # Horodatages détaillés
-    start: Optional[datetime] = None  # Heure de début d'appel
-    answer: Optional[datetime] = None  # Heure de réponse
-    end: Optional[datetime] = None  # Heure de fin
-
     # Identification de l'appelant
     cnam: Optional[str] = None  # Nom de l'appelant (Caller ID Name)
     clid: Optional[str] = None  # Calling Line ID
+    outbound_cnum: Optional[str] = None  # Numéro appelant sortant
+    outbound_cnam: Optional[str] = None  # Nom appelant sortant
+    dst_cnam: Optional[str] = None  # Nom du destinataire
 
     # Routage et facturation
     did: Optional[str] = None  # Direct Inward Dial
@@ -53,15 +51,19 @@ class CallEvent:
     # Détails de l'application
     lastdata: Optional[str] = None  # Arguments de la dernière application
 
+    # Enregistrement
+    recordingfile: Optional[str] = None  # Fichier d'enregistrement de l'appel
+
     def wait_time(self) -> Optional[int]:
         """
         Calcule le temps d'attente avant réponse en secondes.
 
+        Note: Sans les champs start/answer, cette méthode retourne None.
+        Le calcul doit être fait au niveau du Call avec duration - billsec.
+
         Returns:
-            Temps d'attente en secondes, ou None si pas applicable
+            None (calcul fait au niveau Call)
         """
-        if self.start and self.answer:
-            return int((self.answer - self.start).total_seconds())
         return None
 
     def is_answered(self) -> bool:

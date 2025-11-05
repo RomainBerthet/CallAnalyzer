@@ -430,19 +430,28 @@ class CallAnalyzer:
 
         if is_click_to_call and src_ctc and dst_ctc:
             # Calcul des temps pour Click-to-Call
+            # Note: sans start/answer/end dans la DB, on utilise calldate et duration
             ctc_answer_time = None
             ctc_end_time = None
             ctc_wait_time = None
+
+            # Trouver le premier événement répondu pour estimer l'heure de réponse
             for event in events:
-                if event.answer and event.disposition == 'ANSWERED':
-                    ctc_answer_time = event.answer
-                    if event.start:
-                        ctc_wait_time = int((event.answer - event.start).total_seconds())
+                if event.disposition == 'ANSWERED' and event.billsec > 0:
+                    # Estimer answer_time = timestamp (approximation)
+                    ctc_answer_time = event.timestamp
+                    # Estimer wait_time = duration - billsec
+                    if event.duration and event.billsec:
+                        ctc_wait_time = event.duration - event.billsec
                     break
 
             if events:
                 last_event = max(events, key=lambda e: e.timestamp)
-                ctc_end_time = last_event.end if last_event.end else last_event.timestamp
+                # Calculer end_time à partir du timestamp + duration
+                if last_event.duration:
+                    ctc_end_time = last_event.timestamp + timedelta(seconds=last_event.duration)
+                else:
+                    ctc_end_time = last_event.timestamp
 
             return Call(
                 # Identification
@@ -504,23 +513,31 @@ class CallAnalyzer:
         is_internal = self._is_internal_number(first_event.src) and self._is_internal_number(first_event.dst)
 
         # Calcul des temps d'attente et de réponse
+        # Note: sans start/answer/end dans la DB, on utilise calldate et duration
         answer_time = None
         end_time = None
         wait_time = None
         ring_time = None
 
+        # Trouver le premier événement répondu pour estimer l'heure de réponse
         for event in events:
-            if event.answer and event.disposition == 'ANSWERED':
-                answer_time = event.answer
-                if event.start:
-                    wait_time = int((event.answer - event.start).total_seconds())
+            if event.disposition == 'ANSWERED' and event.billsec > 0:
+                # Estimer answer_time = timestamp (approximation)
+                answer_time = event.timestamp
+                # Estimer wait_time = duration - billsec (temps de sonnerie)
+                if event.duration and event.billsec:
+                    wait_time = event.duration - event.billsec
                     ring_time = wait_time  # Temps de sonnerie = temps d'attente
                 break
 
         # Déterminer l'heure de fin
         if events:
             last_event = max(events, key=lambda e: e.timestamp)
-            end_time = last_event.end if last_event.end else last_event.timestamp
+            # Calculer end_time à partir du timestamp + duration
+            if last_event.duration:
+                end_time = last_event.timestamp + timedelta(seconds=last_event.duration)
+            else:
+                end_time = last_event.timestamp
 
         # Détection voicemail et queue
         went_to_voicemail = any(e.is_voicemail() for e in events)
@@ -530,9 +547,9 @@ class CallAnalyzer:
         for event in events:
             if event.is_queue_call() and event.lastdata:
                 queue_name = event.lastdata.split(',')[0] if ',' in event.lastdata else event.lastdata
-                # Calculer le temps d'attente en queue si possible
-                if event.start and event.answer:
-                    queue_wait_time = int((event.answer - event.start).total_seconds())
+                # Calculer le temps d'attente en queue: duration - billsec
+                if event.duration and event.billsec:
+                    queue_wait_time = event.duration - event.billsec
                 break
 
         # Compter les participants uniques
@@ -671,11 +688,12 @@ class CallAnalyzer:
             dst_number = self._extract_number_from_channel(event.dstchannel) or event.dst
 
             # Calcul des durées
+            # Note: sans start/answer/end, on estime ring_duration = duration - billsec
             ring_duration = 0
             talk_duration = event.billsec
 
-            if event.start and event.answer:
-                ring_duration = int((event.answer - event.start).total_seconds())
+            if event.duration and event.billsec:
+                ring_duration = event.duration - event.billsec
 
             # Extraction des sélections DTMF
             dtmf_selections = event.get_dtmf_selections()
@@ -688,9 +706,9 @@ class CallAnalyzer:
                 application=event.lastapp,
                 context=event.context,
                 protocol=event.get_protocol(),
-                start_time=event.start or event.timestamp,
-                answer_time=event.answer,
-                end_time=event.end,
+                start_time=event.timestamp,  # start_time = calldate
+                answer_time=event.timestamp if event.is_answered() else None,  # Approximation
+                end_time=event.timestamp + timedelta(seconds=event.duration) if event.duration else event.timestamp,
                 ring_duration=ring_duration,
                 talk_duration=talk_duration,
                 disposition=event.disposition,
@@ -772,8 +790,9 @@ class CallAnalyzer:
                 answerer = member
 
             # Calculer durée totale de sonnerie du RingGroup
-            if event.start and event.answer:
-                member_ring = int((event.answer - event.start).total_seconds())
+            # Note: sans start/answer, on estime avec duration - billsec
+            if event.duration and event.billsec:
+                member_ring = event.duration - event.billsec
                 ring_duration = max(ring_duration, member_ring)
             elif event.duration:
                 ring_duration = max(ring_duration, event.duration)
@@ -826,9 +845,6 @@ class CallAnalyzer:
                 CallEvent(
                     # Horodatages
                     timestamp=row['calldate'],
-                    start=pd.to_datetime(row.get('start')) if pd.notna(row.get('start')) else None,
-                    answer=pd.to_datetime(row.get('answer')) if pd.notna(row.get('answer')) else None,
-                    end=pd.to_datetime(row.get('end')) if pd.notna(row.get('end')) else None,
 
                     # Identifiants
                     uniqueid=row['uniqueid'],
@@ -845,6 +861,9 @@ class CallAnalyzer:
                     # Identification appelant
                     clid=row.get('clid', None),
                     cnam=row.get('cnam', None),
+                    outbound_cnum=row.get('outbound_cnum', None),
+                    outbound_cnam=row.get('outbound_cnam', None),
+                    dst_cnam=row.get('dst_cnam', None),
 
                     # Contexte et applications
                     context=row['context'],
@@ -865,7 +884,10 @@ class CallAnalyzer:
 
                     # Flags et données personnalisées
                     amaflags=row.get('amaflags', None),
-                    userfield=row.get('userfield', None)
+                    userfield=row.get('userfield', None),
+
+                    # Enregistrement
+                    recordingfile=row.get('recordingfile', None)
                 )
                 for _, row in group.iterrows()
             ]
