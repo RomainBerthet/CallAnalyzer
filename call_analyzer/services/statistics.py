@@ -90,12 +90,12 @@ class StatisticsGenerator:
             'temps_attente_max': int(df.loc[df['wait_time'].notna(), 'wait_time'].max()) if 'wait_time' in df.columns and len(df[df['wait_time'].notna()]) > 0 else 0,
             'temps_attente_min': int(df.loc[df['wait_time'].notna(), 'wait_time'].min()) if 'wait_time' in df.columns and len(df[df['wait_time'].notna()]) > 0 else 0,
 
-            # SLA (Service Level Agreement) - % d'appels répondus en moins de X secondes
-            'sla_20s_count': len(df[df['sla_compliant_20s']]) if 'sla_compliant_20s' in df.columns else 0,
-            'sla_20s_percent': round(len(df[df['sla_compliant_20s']]) / len(df[df['type_appel'] == 'entrant']) * 100, 2) if 'sla_compliant_20s' in df.columns and len(df[df['type_appel'] == 'entrant']) > 0 else 0,
+            # SLA (Service Level Agreement) - % d'appels entrants répondus en moins de X secondes
+            'sla_20s_count': len(df[(df['sla_compliant_20s']) & (df['type_appel'] == 'entrant')]) if 'sla_compliant_20s' in df.columns else 0,
+            'sla_20s_percent': round(len(df[(df['sla_compliant_20s']) & (df['type_appel'] == 'entrant')]) / len(df[df['type_appel'] == 'entrant']) * 100, 2) if 'sla_compliant_20s' in df.columns and len(df[df['type_appel'] == 'entrant']) > 0 else 0,
 
-            'sla_30s_count': len(df[df['sla_compliant_30s']]) if 'sla_compliant_30s' in df.columns else 0,
-            'sla_30s_percent': round(len(df[df['sla_compliant_30s']]) / len(df[df['type_appel'] == 'entrant']) * 100, 2) if 'sla_compliant_30s' in df.columns and len(df[df['type_appel'] == 'entrant']) > 0 else 0,
+            'sla_30s_count': len(df[(df['sla_compliant_30s']) & (df['type_appel'] == 'entrant')]) if 'sla_compliant_30s' in df.columns else 0,
+            'sla_30s_percent': round(len(df[(df['sla_compliant_30s']) & (df['type_appel'] == 'entrant')]) / len(df[df['type_appel'] == 'entrant']) * 100, 2) if 'sla_compliant_30s' in df.columns and len(df[df['type_appel'] == 'entrant']) > 0 else 0,
 
             # === MESSAGERIE VOCALE ===
             'nb_appels_voicemail': len(df[df['went_to_voicemail']]) if 'went_to_voicemail' in df.columns else 0,
@@ -107,7 +107,8 @@ class StatisticsGenerator:
             'temps_attente_queue_max': int(df.loc[df['queue_wait_time'].notna(), 'queue_wait_time'].max()) if 'queue_wait_time' in df.columns and len(df[df['queue_wait_time'].notna()]) > 0 else 0,
 
             # === TAUX DE RÉPONSE ===
-            'taux_reponse_global': round((len(df[df['answered']]) / len(df[df['type_appel'] == 'entrant']) * 100), 2) if len(df[df['type_appel'] == 'entrant']) > 0 else 0,
+            # Taux de réponse = appels entrants répondus / total appels entrants
+            'taux_reponse_global': round((len(df[(df['answered']) & (df['type_appel'] == 'entrant')]) / len(df[df['type_appel'] == 'entrant']) * 100), 2) if len(df[df['type_appel'] == 'entrant']) > 0 else 0,
             'taux_reponse_externe': round((len(df[(df['answered']) & (~df['is_internal']) & (df['type_appel'] == 'entrant')]) / len(df[(~df['is_internal']) & (df['type_appel'] == 'entrant')]) * 100), 2) if len(df[(~df['is_internal']) & (df['type_appel'] == 'entrant')]) > 0 else 0,
 
             # === MÉTRIQUES AVANCÉES ===
@@ -424,7 +425,7 @@ class StatisticsGenerator:
             bins = [0, 10, 20, 30, 60, float('inf')]
 
         # Filtrage des appels avec wait_time
-        df_wait = df[df['wait_time'].notna()]
+        df_wait = df[df['wait_time'].notna()].copy()  # .copy() pour éviter SettingWithCopyWarning
 
         if df_wait.empty:
             return pd.DataFrame()
