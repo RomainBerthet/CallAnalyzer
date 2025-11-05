@@ -29,6 +29,24 @@ class ExcelExporter:
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
     @staticmethod
+    def get_excel_column_name(index: int) -> str:
+        """Convertit un index (0-based) en nom de colonne Excel (A, B, ..., Z, AA, AB, ...).
+
+        Args:
+            index: Index de la colonne (0 pour A, 1 pour B, etc.)
+
+        Returns:
+            Nom de la colonne Excel (A, B, ..., Z, AA, AB, ...)
+        """
+        column_name = ""
+        index += 1  # Excel columns are 1-indexed
+        while index > 0:
+            index -= 1
+            column_name = chr(65 + (index % 26)) + column_name
+            index //= 26
+        return column_name
+
+    @staticmethod
     def export_calls_to_excel(df: pd.DataFrame, filename: str, extensions_dict: Optional[Dict[str, str]] = None) -> str:
         """
         Exporte les données d'appels vers un fichier Excel avec toutes les informations disponibles.
@@ -123,7 +141,9 @@ class ExcelExporter:
                         export_df[col].astype(str).apply(len).max(),
                         len(col)
                     ) + 2
-                    worksheet.column_dimensions[chr(65 + i)].width = min(max_length, 50)
+                    # Utilise get_excel_column_name pour supporter plus de 26 colonnes (A-Z, AA-ZZ, etc.)
+                    column_letter = ExcelExporter.get_excel_column_name(i)
+                    worksheet.column_dimensions[column_letter].width = min(max_length, 50)
 
             logger.info(f"Données exportées avec succès vers {filename}")
             return filename
@@ -344,7 +364,9 @@ class ExcelExporter:
                     worksheet = writer.sheets[sheet_name]
                     for i, col in enumerate(worksheet.iter_cols(min_row=1, max_row=1)):
                         max_length = len(str(col[0].value)) + 2
-                        worksheet.column_dimensions[chr(65 + i)].width = min(max_length, 50)
+                        # Utilise get_excel_column_name pour supporter plus de 26 colonnes
+                        column_letter = ExcelExporter.get_excel_column_name(i)
+                        worksheet.column_dimensions[column_letter].width = min(max_length, 50)
 
             logger.info(f"Statistiques exportées avec succès vers {filename}")
             return filename
