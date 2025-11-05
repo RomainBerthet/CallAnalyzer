@@ -74,18 +74,29 @@ class ExcelExporter:
             'original_caller_name': 'Nom appelant',
             'dst': 'Destination',
             'dst_name': 'Nom destination',
+            'answering_party': 'Qui a répondu',  # NOUVEAU
+            'answering_party_name': 'Nom répondeur',  # NOUVEAU
             'duree': 'Durée',
             'temps_attente': 'Temps attente',
             'status': 'Statut',
             'type_appel': 'Type',
-            'path': 'Chemin d\'appel',
+            'path': 'Chemin simple',
+            'detailed_path': 'Chemin détaillé',  # NOUVEAU
+            'segments_count': 'Nb segments',  # NOUVEAU
             'renvoi_depuis': 'Renvoi depuis',
             'renvoi_vers': 'Renvoi vers',
             'transfert_depuis': 'Transfert depuis',
             'transfert_vers': 'Transfert vers',
             'went_to_voicemail': 'Messagerie vocale',
+            'voicemail_box': 'Boîte vocale',  # NOUVEAU
             'queue_name': 'Queue',
             'temps_attente_queue': 'Attente queue',
+            'has_ivr': 'IVR utilisé',  # NOUVEAU
+            'ivr_path': 'Chemin IVR',  # NOUVEAU
+            'ringgroup_used': 'RingGroup',  # NOUVEAU
+            'ringgroup_answerer': 'RG répondeur',  # NOUVEAU
+            'ringgroup_summary': 'Détails RG',  # NOUVEAU
+            'is_conference': 'Conférence',  # NOUVEAU
             'did': 'DID',
             'sla_compliant_20s': 'SLA 20s',
             'is_click_to_call': 'Click-to-Call',
@@ -242,10 +253,14 @@ class ExcelExporter:
             daily_stats['taux_reponse'] = (daily_stats['nb_appels_repondus'] / daily_stats['nb_appels'] * 100).round(1)
             daily_stats['date_format'] = pd.to_datetime(daily_stats['date']).dt.strftime('%d/%m/%Y')
 
-        # Génération des nouvelles statistiques
+        # Génération des statistiques
         queue_stats = StatisticsGenerator.calculate_queue_statistics(df)
         sla_stats = StatisticsGenerator.calculate_sla_statistics(df)
         wait_dist = StatisticsGenerator.calculate_wait_time_distribution(df)
+
+        # NOUVELLES statistiques IVR et RingGroups
+        ivr_stats = StatisticsGenerator.calculate_ivr_statistics(df)
+        ringgroup_stats = StatisticsGenerator.calculate_ringgroup_statistics_detailed(df)
 
         # Export vers Excel
         try:
@@ -307,6 +322,22 @@ class ExcelExporter:
                     wait_display = wait_dist.copy()
                     wait_display.columns = ['Tranche de Temps', 'Nombre d\'Appels', 'Pourcentage (%)']
                     wait_display.to_excel(writer, sheet_name='Distribution Attente', index=False)
+
+                # Feuille des statistiques IVR (NOUVEAU)
+                if not ivr_stats.empty:
+                    ivr_display = ivr_stats.copy()
+                    ivr_display.columns = ['Total Appels IVR', 'IVR Répondus', 'IVR Abandonnés',
+                                          'Taux Abandon (%)', 'Chemins Uniques', 'Chemin+ Fréquent',
+                                          'Fréquence Chemin+']
+                    ivr_display.to_excel(writer, sheet_name='IVR', index=False)
+
+                # Feuille des RingGroups détaillés (NOUVEAU)
+                if not ringgroup_stats.empty:
+                    rg_display = ringgroup_stats.copy()
+                    rg_display.columns = ['RingGroup', 'Nb Appels', 'Nb Répondus', 'Sonnerie Moy. (s)',
+                                         'Sonnerie Max (s)', 'Taux Réponse (%)', 'Membre Principal',
+                                         'Réponses Membre']
+                    rg_display.to_excel(writer, sheet_name='RingGroups Détaillés', index=False)
 
                 # Ajustement des largeurs de colonnes pour toutes les feuilles
                 for sheet_name in writer.sheets:

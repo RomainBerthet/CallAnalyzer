@@ -105,11 +105,8 @@ class QueryBuilder:
             GROUP BY linkedid
         )
         SELECT
-            /* Horodatages */
+            /* Horodatage */
             c.calldate,
-            c.start,
-            c.answer,
-            c.end,
 
             /* Identifiants */
             c.uniqueid,
@@ -126,6 +123,9 @@ class QueryBuilder:
             /* Identification appelant */
             c.clid,
             c.cnam,
+            c.outbound_cnum,
+            c.outbound_cnam,
+            c.dst_cnam,
 
             /* Contexte et applications */
             c.dcontext AS context,
@@ -146,7 +146,10 @@ class QueryBuilder:
 
             /* Flags et données personnalisées */
             c.amaflags,
-            c.userfield
+            c.userfield,
+
+            /* Enregistrement */
+            c.recordingfile
 
         FROM asteriskcdrdb.cdr c
         WHERE c.calldate BETWEEN '{date_debut_sql}' AND '{date_fin_sql}'

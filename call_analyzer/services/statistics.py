@@ -448,3 +448,96 @@ class StatisticsGenerator:
         distribution['pourcentage'] = (distribution['nb_appels'] / total * 100).round(2)
 
         return distribution
+
+    @staticmethod
+    def calculate_ivr_statistics(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calcule les statistiques d'utilisation IVR (menus interactifs).
+
+        Args:
+            df: DataFrame contenant les données d'appels
+
+        Returns:
+            DataFrame contenant les statistiques IVR
+        """
+        if df.empty or 'has_ivr' not in df.columns:
+            return pd.DataFrame()
+
+        # Filtrer les appels avec IVR
+        df_ivr = df[df['has_ivr']]
+
+        if df_ivr.empty:
+            return pd.DataFrame()
+
+        # Statistiques globales IVR
+        total_ivr = len(df_ivr)
+        ivr_answered = len(df_ivr[df_ivr['answered']])
+        ivr_abandoned = total_ivr - ivr_answered
+
+        # Analyse des chemins IVR
+        ivr_paths = df_ivr[df_ivr['ivr_path'].notna()]['ivr_path'].value_counts()
+
+        stats_data = {
+            'total_calls_with_ivr': total_ivr,
+            'ivr_calls_answered': ivr_answered,
+            'ivr_calls_abandoned': ivr_abandoned,
+            'ivr_abandon_rate': round(ivr_abandoned / total_ivr * 100, 2) if total_ivr > 0 else 0,
+            'unique_ivr_paths': len(ivr_paths),
+            'most_common_path': ivr_paths.index[0] if not ivr_paths.empty else None,
+            'most_common_path_count': ivr_paths.iloc[0] if not ivr_paths.empty else 0
+        }
+
+        return pd.DataFrame([stats_data])
+
+    @staticmethod
+    def calculate_ringgroup_statistics_detailed(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calcule des statistiques détaillées par RingGroup.
+
+        Args:
+            df: DataFrame contenant les données d'appels
+
+        Returns:
+            DataFrame contenant les statistiques par RingGroup
+        """
+        if df.empty or 'ringgroup_used' not in df.columns:
+            return pd.DataFrame()
+
+        # Filtrer les appels utilisant un RingGroup
+        df_rg = df[df['ringgroup_used'].notna()]
+
+        if df_rg.empty:
+            return pd.DataFrame()
+
+        # Statistiques par RingGroup
+        rg_stats = df_rg.groupby('ringgroup_used').agg(
+            nb_appels=('uniqueid', 'count'),
+            nb_repondus=('answered', 'sum'),
+            duree_sonnerie_moyenne=('ringgroup_ring_duration', lambda x: x.mean() if x.notna().any() else 0),
+            duree_sonnerie_max=('ringgroup_ring_duration', lambda x: x.max() if x.notna().any() else 0)
+        ).reset_index()
+
+        # Taux de réponse par RingGroup
+        rg_stats['taux_reponse'] = (rg_stats['nb_repondus'] / rg_stats['nb_appels'] * 100).round(1)
+
+        # Arrondir les durées
+        rg_stats['duree_sonnerie_moyenne'] = rg_stats['duree_sonnerie_moyenne'].round(0).astype(int)
+        rg_stats['duree_sonnerie_max'] = rg_stats['duree_sonnerie_max'].round(0).astype(int)
+
+        # Analyser qui répond le plus dans chaque RingGroup
+        for idx, row in rg_stats.iterrows():
+            rg_num = row['ringgroup_used']
+            rg_calls = df_rg[df_rg['ringgroup_used'] == rg_num]
+
+            # Compter les réponses par membre
+            answerers = rg_calls[rg_calls['ringgroup_answerer'].notna()]['ringgroup_answerer']
+            if not answerers.empty:
+                top_answerer = answerers.value_counts().index[0]
+                top_answerer_count = answerers.value_counts().iloc[0]
+                rg_stats.at[idx, 'membre_principal'] = top_answerer
+                rg_stats.at[idx, 'reponses_membre_principal'] = top_answerer_count
+            else:
+                rg_stats.at[idx, 'membre_principal'] = None
+                rg_stats.at[idx, 'reponses_membre_principal'] = 0
+
+        return rg_stats.sort_values('nb_appels', ascending=False)

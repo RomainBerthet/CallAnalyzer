@@ -430,19 +430,28 @@ class CallAnalyzer:
 
         if is_click_to_call and src_ctc and dst_ctc:
             # Calcul des temps pour Click-to-Call
+            # Note: sans start/answer/end dans la DB, on utilise calldate et duration
             ctc_answer_time = None
             ctc_end_time = None
             ctc_wait_time = None
+
+            # Trouver le premier événement répondu pour estimer l'heure de réponse
             for event in events:
-                if event.answer and event.disposition == 'ANSWERED':
-                    ctc_answer_time = event.answer
-                    if event.start:
-                        ctc_wait_time = int((event.answer - event.start).total_seconds())
+                if event.disposition == 'ANSWERED' and event.billsec > 0:
+                    # Estimer answer_time = timestamp (approximation)
+                    ctc_answer_time = event.timestamp
+                    # Estimer wait_time = duration - billsec
+                    if event.duration and event.billsec:
+                        ctc_wait_time = event.duration - event.billsec
                     break
 
             if events:
                 last_event = max(events, key=lambda e: e.timestamp)
-                ctc_end_time = last_event.end if last_event.end else last_event.timestamp
+                # Calculer end_time à partir du timestamp + duration
+                if last_event.duration:
+                    ctc_end_time = last_event.timestamp + timedelta(seconds=last_event.duration)
+                else:
+                    ctc_end_time = last_event.timestamp
 
             return Call(
                 # Identification
@@ -504,23 +513,31 @@ class CallAnalyzer:
         is_internal = self._is_internal_number(first_event.src) and self._is_internal_number(first_event.dst)
 
         # Calcul des temps d'attente et de réponse
+        # Note: sans start/answer/end dans la DB, on utilise calldate et duration
         answer_time = None
         end_time = None
         wait_time = None
         ring_time = None
 
+        # Trouver le premier événement répondu pour estimer l'heure de réponse
         for event in events:
-            if event.answer and event.disposition == 'ANSWERED':
-                answer_time = event.answer
-                if event.start:
-                    wait_time = int((event.answer - event.start).total_seconds())
+            if event.disposition == 'ANSWERED' and event.billsec > 0:
+                # Estimer answer_time = timestamp (approximation)
+                answer_time = event.timestamp
+                # Estimer wait_time = duration - billsec (temps de sonnerie)
+                if event.duration and event.billsec:
+                    wait_time = event.duration - event.billsec
                     ring_time = wait_time  # Temps de sonnerie = temps d'attente
                 break
 
         # Déterminer l'heure de fin
         if events:
             last_event = max(events, key=lambda e: e.timestamp)
-            end_time = last_event.end if last_event.end else last_event.timestamp
+            # Calculer end_time à partir du timestamp + duration
+            if last_event.duration:
+                end_time = last_event.timestamp + timedelta(seconds=last_event.duration)
+            else:
+                end_time = last_event.timestamp
 
         # Détection voicemail et queue
         went_to_voicemail = any(e.is_voicemail() for e in events)
@@ -530,9 +547,9 @@ class CallAnalyzer:
         for event in events:
             if event.is_queue_call() and event.lastdata:
                 queue_name = event.lastdata.split(',')[0] if ',' in event.lastdata else event.lastdata
-                # Calculer le temps d'attente en queue si possible
-                if event.start and event.answer:
-                    queue_wait_time = int((event.answer - event.start).total_seconds())
+                # Calculer le temps d'attente en queue: duration - billsec
+                if event.duration and event.billsec:
+                    queue_wait_time = event.duration - event.billsec
                 break
 
         # Compter les participants uniques
@@ -548,6 +565,37 @@ class CallAnalyzer:
             dst_from_channel = self._extract_number_from_channel(event.dstchannel)
             if dst_from_channel:
                 participants.add(dst_from_channel)
+
+        # === NOUVELLES ANALYSES DÉTAILLÉES ===
+
+        # Construire les segments détaillés du chemin d'appel
+        call_segments = self._build_call_segments(events)
+
+        # Analyser les interactions IVR
+        has_ivr, ivr_selections, ivr_path = self._analyze_ivr_interactions(events)
+
+        # Analyser les détails RingGroup
+        ringgroup_number, ringgroup_members, ringgroup_answerer, ringgroup_duration = self._analyze_ringgroup_details(events)
+
+        # Identifier qui a répondu (avec nom si disponible via extensions_dict si fourni)
+        answering_party, answering_party_name = self._identify_answering_party(events)
+
+        # Identifier boîte vocale si utilisée
+        voicemail_box = None
+        if went_to_voicemail:
+            vm_event = next((e for e in events if e.is_voicemail()), None)
+            if vm_event:
+                voicemail_box = vm_event.get_voicemail_box()
+
+        # Détecter les conférences
+        is_conference = any(e.is_conference_call() for e in events)
+        conference_id = None
+        if is_conference:
+            conf_event = next((e for e in events if e.is_conference_call()), None)
+            if conf_event and conf_event.lastdata:
+                # Extraire l'ID de conférence depuis lastdata
+                conf_parts = conf_event.lastdata.split(',')
+                conference_id = conf_parts[0] if conf_parts else None
 
         return Call(
             # Identification
@@ -572,9 +620,14 @@ class CallAnalyzer:
             wait_time=wait_time,
             ring_time=ring_time,
 
-            # Analyse du chemin
+            # Analyse du chemin DÉTAILLÉE
             final_path=path,
+            call_segments=call_segments,
             call_path_details=call_path_details,
+
+            # Qui a répondu
+            answering_party=answering_party,
+            answering_party_name=answering_party_name,
 
             # Transferts et renvois
             transfers_from=transfers_from,
@@ -584,8 +637,24 @@ class CallAnalyzer:
 
             # Applications spéciales
             went_to_voicemail=went_to_voicemail,
+            voicemail_box=voicemail_box,
             queue_name=queue_name,
             queue_wait_time=queue_wait_time,
+
+            # IVR (Interactive Voice Response)
+            has_ivr=has_ivr,
+            ivr_selections=ivr_selections,
+            ivr_path=ivr_path,
+
+            # RingGroups détaillés
+            ringgroup_used=ringgroup_number,
+            ringgroup_members_tried=ringgroup_members if ringgroup_members else [],
+            ringgroup_answerer=ringgroup_answerer,
+            ringgroup_ring_duration=ringgroup_duration,
+
+            # Conférence
+            is_conference=is_conference,
+            conference_id=conference_id,
 
             # Routage et facturation
             did=first_event.did,
@@ -597,6 +666,165 @@ class CallAnalyzer:
             total_participants=len(participants),
             event_count=len(events)
         )
+
+    def _build_call_segments(self, events: List[CallEvent]) -> List:
+        """
+        Construit la liste détaillée des segments d'appel avec durées et participants.
+
+        Args:
+            events: Liste des événements d'appel
+
+        Returns:
+            Liste des CallSegment
+        """
+        from call_analyzer.models.call import CallSegment
+
+        segments = []
+        segment_number = 0
+
+        for event in events:
+            # Extraction des parties source et destination
+            src_number = self._extract_number_from_channel(event.channel) or event.src
+            dst_number = self._extract_number_from_channel(event.dstchannel) or event.dst
+
+            # Calcul des durées
+            # Note: sans start/answer/end, on estime ring_duration = duration - billsec
+            ring_duration = 0
+            talk_duration = event.billsec
+
+            if event.duration and event.billsec:
+                ring_duration = event.duration - event.billsec
+
+            # Extraction des sélections DTMF
+            dtmf_selections = event.get_dtmf_selections()
+
+            # Création du segment
+            segment = CallSegment(
+                segment_number=segment_number,
+                from_party=src_number,
+                to_party=dst_number,
+                application=event.lastapp,
+                context=event.context,
+                protocol=event.get_protocol(),
+                start_time=event.timestamp,  # start_time = calldate
+                answer_time=event.timestamp if event.is_answered() else None,  # Approximation
+                end_time=event.timestamp + timedelta(seconds=event.duration) if event.duration else event.timestamp,
+                ring_duration=ring_duration,
+                talk_duration=talk_duration,
+                disposition=event.disposition,
+                answered=event.is_answered(),
+                dtmf_selections=dtmf_selections,
+                queue_name=event.get_queue_name() if event.is_queue_call() else None
+            )
+
+            segments.append(segment)
+            segment_number += 1
+
+        return segments
+
+    def _analyze_ivr_interactions(self, events: List[CallEvent]) -> tuple:
+        """
+        Analyse les interactions IVR (menus interactifs).
+
+        Args:
+            events: Liste des événements d'appel
+
+        Returns:
+            Tuple (has_ivr: bool, ivr_selections: dict, ivr_path: str)
+        """
+        has_ivr = any(e.is_ivr_call() for e in events)
+
+        if not has_ivr:
+            return False, {}, ""
+
+        ivr_selections = {}
+        ivr_path_parts = []
+        step_number = 0
+
+        for event in events:
+            if event.is_ivr_call():
+                dtmf = event.get_dtmf_selections()
+                if dtmf:
+                    step_key = f"step_{step_number}"
+                    ivr_selections[step_key] = dtmf
+                    ivr_path_parts.extend(dtmf)
+                    step_number += 1
+
+        ivr_path = " → ".join(ivr_path_parts) if ivr_path_parts else ""
+
+        return has_ivr, ivr_selections, ivr_path
+
+    def _analyze_ringgroup_details(self, events: List[CallEvent]) -> tuple:
+        """
+        Analyse détaillée des RingGroups: membres contactés, qui a répondu, durées.
+
+        Args:
+            events: Liste des événements d'appel
+
+        Returns:
+            Tuple (ringgroup_number, members_tried, answerer, ring_duration)
+        """
+        # Identifier si un RingGroup est utilisé
+        ringgroup_events = [e for e in events if e.context == 'ext-group']
+
+        if not ringgroup_events:
+            return None, [], None, None
+
+        # Numéro du RingGroup
+        ringgroup_number = ringgroup_events[0].dst if ringgroup_events else None
+
+        # Membres contactés
+        members_tried = []
+        answerer = None
+        ring_duration = 0
+
+        for event in ringgroup_events:
+            # Extraire le membre du RingGroup
+            member = self._extract_number_from_channel(event.dstchannel) or event.dst
+
+            if member and member not in members_tried and member != ringgroup_number:
+                members_tried.append(member)
+
+            # Identifier qui a répondu
+            if event.disposition == 'ANSWERED' and not answerer:
+                answerer = member
+
+            # Calculer durée totale de sonnerie du RingGroup
+            # Note: sans start/answer, on estime avec duration - billsec
+            if event.duration and event.billsec:
+                member_ring = event.duration - event.billsec
+                ring_duration = max(ring_duration, member_ring)
+            elif event.duration:
+                ring_duration = max(ring_duration, event.duration)
+
+        return ringgroup_number, members_tried, answerer, ring_duration
+
+    def _identify_answering_party(self, events: List[CallEvent], extensions_dict: dict = None) -> tuple:
+        """
+        Identifie précisément qui a répondu à l'appel.
+
+        Args:
+            events: Liste des événements d'appel
+            extensions_dict: Dictionnaire des extensions avec noms
+
+        Returns:
+            Tuple (answering_party: str, answering_party_name: str)
+        """
+        # Trouver le premier événement ANSWERED
+        answered_event = next((e for e in events if e.disposition == 'ANSWERED'), None)
+
+        if not answered_event:
+            return None, None
+
+        # Extraire le numéro qui a répondu
+        answering_party = self._extract_number_from_channel(answered_event.dstchannel) or answered_event.dst
+
+        # Trouver le nom si disponible
+        answering_party_name = None
+        if extensions_dict and answering_party:
+            answering_party_name = extensions_dict.get(answering_party)
+
+        return answering_party, answering_party_name
 
     def process_dataframe(self, df: pd.DataFrame) -> List[Call]:
         """Traite un DataFrame de données d'appels et retourne les appels analysés.
@@ -617,9 +845,6 @@ class CallAnalyzer:
                 CallEvent(
                     # Horodatages
                     timestamp=row['calldate'],
-                    start=pd.to_datetime(row.get('start')) if pd.notna(row.get('start')) else None,
-                    answer=pd.to_datetime(row.get('answer')) if pd.notna(row.get('answer')) else None,
-                    end=pd.to_datetime(row.get('end')) if pd.notna(row.get('end')) else None,
 
                     # Identifiants
                     uniqueid=row['uniqueid'],
@@ -636,6 +861,9 @@ class CallAnalyzer:
                     # Identification appelant
                     clid=row.get('clid', None),
                     cnam=row.get('cnam', None),
+                    outbound_cnum=row.get('outbound_cnum', None),
+                    outbound_cnam=row.get('outbound_cnam', None),
+                    dst_cnam=row.get('dst_cnam', None),
 
                     # Contexte et applications
                     context=row['context'],
@@ -656,7 +884,10 @@ class CallAnalyzer:
 
                     # Flags et données personnalisées
                     amaflags=row.get('amaflags', None),
-                    userfield=row.get('userfield', None)
+                    userfield=row.get('userfield', None),
+
+                    # Enregistrement
+                    recordingfile=row.get('recordingfile', None)
                 )
                 for _, row in group.iterrows()
             ]
@@ -667,13 +898,15 @@ class CallAnalyzer:
         return calls
 
     def to_dataframe(self, calls: List[Call]) -> pd.DataFrame:
-        """Convertit une liste d'appels en DataFrame.
+        """
+        Convertit une liste d'appels en DataFrame.
 
         Args:
             calls: Liste des appels à convertir
 
         Returns:
-            DataFrame contenant les données d'appels avec tous les champs
+            DataFrame contenant les données d'appels avec TOUS les champs incluant
+            les nouveaux champs détaillés (IVR, RingGroup, segments, etc.)
         """
         if not calls:
             return pd.DataFrame()
@@ -692,6 +925,10 @@ class CallAnalyzer:
             'dst': call.destination,
             'original_caller_name': call.original_caller_name,
 
+            # Qui a répondu (NOUVEAU)
+            'answering_party': call.answering_party,
+            'answering_party_name': call.answering_party_name,
+
             # État et classification
             'status': call.status,
             'answered': call.status == 'ANSWERED',
@@ -706,6 +943,8 @@ class CallAnalyzer:
 
             # Chemins et transferts
             'path': call.final_path,
+            'detailed_path': call.get_detailed_path_string(),  # NOUVEAU: chemin avec durées
+            'segments_count': call.segments_count,  # NOUVEAU
             'transfert_depuis': call.transfers_from,
             'transfert_vers': call.transfers_to,
             'renvoi_depuis': call.forwards_from,
@@ -715,8 +954,25 @@ class CallAnalyzer:
 
             # Applications spéciales
             'went_to_voicemail': call.went_to_voicemail,
+            'voicemail_box': call.voicemail_box,  # NOUVEAU
             'queue_name': call.queue_name,
             'queue_wait_time': call.queue_wait_time,
+
+            # IVR (NOUVEAU)
+            'has_ivr': call.has_ivr,
+            'ivr_path': call.ivr_path,
+            'ivr_summary': call.get_ivr_summary(),
+
+            # RingGroups (NOUVEAU détaillé)
+            'ringgroup_used': call.ringgroup_used,
+            'ringgroup_members_tried': ','.join(call.ringgroup_members_tried) if call.ringgroup_members_tried else None,
+            'ringgroup_answerer': call.ringgroup_answerer,
+            'ringgroup_ring_duration': call.ringgroup_ring_duration,
+            'ringgroup_summary': call.get_ringgroup_summary(),
+
+            # Conférence (NOUVEAU)
+            'is_conference': call.is_conference,
+            'conference_id': call.conference_id,
 
             # Routage et facturation
             'did': call.did,
@@ -728,7 +984,7 @@ class CallAnalyzer:
             'total_participants': call.total_participants,
             'event_count': call.event_count,
 
-            # Indicateurs SLA (20 secondes par défaut)
+            # Indicateurs SLA
             'sla_compliant_20s': call.sla_compliant(20),
             'sla_compliant_30s': call.sla_compliant(30),
             'is_missed': call.is_missed(),
