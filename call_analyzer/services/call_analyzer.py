@@ -429,25 +429,68 @@ class CallAnalyzer:
         is_click_to_call, src_ctc, dst_ctc, duration_ctc, forward_numbers = self._identify_click_to_call(events)
 
         if is_click_to_call and src_ctc and dst_ctc:
+            # Calcul des temps pour Click-to-Call
+            ctc_answer_time = None
+            ctc_end_time = None
+            ctc_wait_time = None
+            for event in events:
+                if event.answer and event.disposition == 'ANSWERED':
+                    ctc_answer_time = event.answer
+                    if event.start:
+                        ctc_wait_time = int((event.answer - event.start).total_seconds())
+                    break
+
+            if events:
+                last_event = max(events, key=lambda e: e.timestamp)
+                ctc_end_time = last_event.end if last_event.end else last_event.timestamp
+
             return Call(
-                start_time=events[0].timestamp,
+                # Identification
                 uniqueid=events[0].linkedid,
+                start_time=events[0].timestamp,
+
+                # Participants
                 source=src_ctc,
                 destination=dst_ctc,
-                duration=duration_ctc,
+                original_caller_name=events[0].cnam,
+
+                # État et classification
                 status=self._get_call_status(events),
                 type=self._get_call_direction(events, self._is_internal_number(src_ctc) and self._is_internal_number(dst_ctc)),
                 is_internal=self._is_internal_number(src_ctc) and self._is_internal_number(dst_ctc),
+                is_click_to_call=True,
+
+                # Durées et horodatages
+                duration=duration_ctc,
+                answer_time=ctc_answer_time,
+                end_time=ctc_end_time,
+                wait_time=ctc_wait_time,
+                ring_time=ctc_wait_time,
+
+                # Analyse du chemin
+                final_path=" --> ".join([src_ctc] + forward_numbers + [dst_ctc]),
+                call_path_details=None,
+
+                # Transferts et renvois
                 transfers_from=None,
                 transfers_to=None,
                 forwards_from=None,
                 forwards_to=None,
-                is_click_to_call=True,
-                final_path=" --> ".join([src_ctc] + forward_numbers + [dst_ctc]),
-                original_caller_name=events[0].cnam,
+
+                # Applications spéciales
+                went_to_voicemail=False,
+                queue_name=None,
+                queue_wait_time=None,
+
+                # Routage et facturation
                 did=events[0].did,
                 accountcode=events[0].accountcode,
-                userfield=events[0].userfield
+                peeraccount=events[0].peeraccount,
+                userfield=events[0].userfield,
+
+                # Métriques
+                total_participants=len(set([src_ctc, dst_ctc] + forward_numbers)),
+                event_count=len(events)
             )
 
         first_event = events[0]
@@ -460,25 +503,99 @@ class CallAnalyzer:
         transfers_from, transfers_to, forwards_from, forwards_to, path, call_path_details = self._identify_actions_by_context(events)
         is_internal = self._is_internal_number(first_event.src) and self._is_internal_number(first_event.dst)
 
+        # Calcul des temps d'attente et de réponse
+        answer_time = None
+        end_time = None
+        wait_time = None
+        ring_time = None
+
+        for event in events:
+            if event.answer and event.disposition == 'ANSWERED':
+                answer_time = event.answer
+                if event.start:
+                    wait_time = int((event.answer - event.start).total_seconds())
+                    ring_time = wait_time  # Temps de sonnerie = temps d'attente
+                break
+
+        # Déterminer l'heure de fin
+        if events:
+            last_event = max(events, key=lambda e: e.timestamp)
+            end_time = last_event.end if last_event.end else last_event.timestamp
+
+        # Détection voicemail et queue
+        went_to_voicemail = any(e.is_voicemail() for e in events)
+        queue_name = None
+        queue_wait_time = None
+
+        for event in events:
+            if event.is_queue_call() and event.lastdata:
+                queue_name = event.lastdata.split(',')[0] if ',' in event.lastdata else event.lastdata
+                # Calculer le temps d'attente en queue si possible
+                if event.start and event.answer:
+                    queue_wait_time = int((event.answer - event.start).total_seconds())
+                break
+
+        # Compter les participants uniques
+        participants = set()
+        for event in events:
+            if event.src:
+                participants.add(event.src)
+            if event.dst:
+                participants.add(event.dst)
+            src_from_channel = self._extract_number_from_channel(event.channel)
+            if src_from_channel:
+                participants.add(src_from_channel)
+            dst_from_channel = self._extract_number_from_channel(event.dstchannel)
+            if dst_from_channel:
+                participants.add(dst_from_channel)
+
         return Call(
-            start_time=first_event.timestamp,
+            # Identification
             uniqueid=first_event.linkedid,
+            start_time=first_event.timestamp,
+
+            # Participants
             source=first_event.src,
             destination=first_event.dst,
-            duration=self._get_call_billsec(events),
+            original_caller_name=first_event.cnam,
+
+            # État et classification
             status=self._get_call_status(events),
             type=self._get_call_direction(events, is_internal),
             is_internal=is_internal,
+            is_click_to_call=False,
+
+            # Durées et horodatages
+            duration=self._get_call_billsec(events),
+            answer_time=answer_time,
+            end_time=end_time,
+            wait_time=wait_time,
+            ring_time=ring_time,
+
+            # Analyse du chemin
+            final_path=path,
+            call_path_details=call_path_details,
+
+            # Transferts et renvois
             transfers_from=transfers_from,
             transfers_to=transfers_to,
             forwards_from=forwards_from,
             forwards_to=forwards_to,
-            final_path=path,
-            is_click_to_call=False,
-            original_caller_name=first_event.cnam,
+
+            # Applications spéciales
+            went_to_voicemail=went_to_voicemail,
+            queue_name=queue_name,
+            queue_wait_time=queue_wait_time,
+
+            # Routage et facturation
             did=first_event.did,
             accountcode=first_event.accountcode,
-            userfield=first_event.userfield
+            peeraccount=first_event.peeraccount,
+            userfield=first_event.userfield,
+
+            # Métriques
+            total_participants=len(participants),
+            event_count=len(events)
         )
 
     def process_dataframe(self, df: pd.DataFrame) -> List[Call]:
@@ -498,26 +615,48 @@ class CallAnalyzer:
         for linkedid, group in df.groupby('linkedid'):
             events = [
                 CallEvent(
+                    # Horodatages
                     timestamp=row['calldate'],
+                    start=pd.to_datetime(row.get('start')) if pd.notna(row.get('start')) else None,
+                    answer=pd.to_datetime(row.get('answer')) if pd.notna(row.get('answer')) else None,
+                    end=pd.to_datetime(row.get('end')) if pd.notna(row.get('end')) else None,
+
+                    # Identifiants
                     uniqueid=row['uniqueid'],
                     linkedid=row['linkedid'],
+                    sequence=row['sequence'],
+
+                    # Numéros et canaux
                     src=row['src'],
                     dst=row['dst'],
+                    cnum=row['cnum'],
                     channel=row['channel'],
                     dstchannel=row['dstchannel'],
-                    disposition=row['disposition'],
-                    billsec=row['billsec'],
-                    sequence=row['sequence'],
+
+                    # Identification appelant
+                    clid=row.get('clid', None),
+                    cnam=row.get('cnam', None),
+
+                    # Contexte et applications
                     context=row['context'],
                     lastapp=row['lastapp'],
-                    cnum=row['cnum'],
-                    cnam=row.get('cnam', None),
+                    lastdata=row.get('lastdata', None),
+
+                    # État
+                    disposition=row['disposition'],
+
+                    # Durées
+                    duration=row.get('duration', None),
+                    billsec=row['billsec'],
+
+                    # Routage et facturation
                     did=row.get('did', None),
                     accountcode=row.get('accountcode', None),
-                    userfield=row.get('userfield', None),
+                    peeraccount=row.get('peeraccount', None),
+
+                    # Flags et données personnalisées
                     amaflags=row.get('amaflags', None),
-                    duration=row.get('duration', None),
-                    clid=row.get('clid', None)
+                    userfield=row.get('userfield', None)
                 )
                 for _, row in group.iterrows()
             ]
@@ -534,38 +673,72 @@ class CallAnalyzer:
             calls: Liste des appels à convertir
 
         Returns:
-            DataFrame contenant les données d'appels
+            DataFrame contenant les données d'appels avec tous les champs
         """
         if not calls:
             return pd.DataFrame()
 
         data = [{
+            # Horodatages
             'call_date': call.start_time,
-            'end_date': call.start_time + timedelta(seconds=call.duration),
+            'answer_date': call.answer_time,
+            'end_date': call.end_time if call.end_time else (call.start_time + timedelta(seconds=call.duration)),
+
+            # Identification
             'uniqueid': call.uniqueid,
+
+            # Participants
             'src': call.source,
             'dst': call.destination,
-            'billsec': call.duration,
+            'original_caller_name': call.original_caller_name,
+
+            # État et classification
             'status': call.status,
             'answered': call.status == 'ANSWERED',
             'type_appel': call.type,
             'is_internal': call.is_internal,
+            'is_click_to_call': call.is_click_to_call,
+
+            # Durées et temps d'attente
+            'billsec': call.duration,
+            'wait_time': call.wait_time,
+            'ring_time': call.ring_time,
+
+            # Chemins et transferts
+            'path': call.final_path,
             'transfert_depuis': call.transfers_from,
             'transfert_vers': call.transfers_to,
             'renvoi_depuis': call.forwards_from,
             'renvoi_vers': call.forwards_to,
-            'path': call.final_path,
-            'is_click_to_call': call.is_click_to_call,
-            'original_caller_name': call.original_caller_name,
+            'has_transfer': call.has_transfer,
+            'has_forward': call.has_forward,
+
+            # Applications spéciales
+            'went_to_voicemail': call.went_to_voicemail,
+            'queue_name': call.queue_name,
+            'queue_wait_time': call.queue_wait_time,
+
+            # Routage et facturation
             'did': call.did,
             'accountcode': call.accountcode,
-            'userfield': call.userfield
+            'peeraccount': call.peeraccount,
+            'userfield': call.userfield,
+
+            # Métriques
+            'total_participants': call.total_participants,
+            'event_count': call.event_count,
+
+            # Indicateurs SLA (20 secondes par défaut)
+            'sla_compliant_20s': call.sla_compliant(20),
+            'sla_compliant_30s': call.sla_compliant(30),
+            'is_missed': call.is_missed(),
+            'is_successful_outbound': call.is_successful_outbound()
         } for call in calls]
 
         df = pd.DataFrame(data)
 
         # Conversion des colonnes de date en datetime
-        for col in ['call_date', 'end_date']:
+        for col in ['call_date', 'answer_date', 'end_date']:
             if col in df.columns:
                 df[col] = pd.to_datetime(df[col])
 

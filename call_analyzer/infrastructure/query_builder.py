@@ -95,6 +95,7 @@ class QueryBuilder:
         filter_condition = QueryBuilder.build_filter_condition(numeros) if numeros else ""
 
         # Requête optimisée avec CTE (Common Table Expression) pour meilleures performances
+        # Récupère TOUS les champs CDR disponibles dans FreePBX/Asterisk
         query = f"""
         WITH filtered_calls AS (
             SELECT linkedid
@@ -103,27 +104,50 @@ class QueryBuilder:
             {filter_condition}
             GROUP BY linkedid
         )
-        SELECT 
+        SELECT
+            /* Horodatages */
             c.calldate,
+            c.start,
+            c.answer,
+            c.end,
+
+            /* Identifiants */
             c.uniqueid,
             c.linkedid,
+            c.sequence,
+
+            /* Numéros et canaux */
             c.src,
             c.dst,
+            c.cnum,
             c.channel,
             c.dstchannel,
-            c.disposition,
-            c.cnum,
-            c.billsec,
-            c.sequence,
+
+            /* Identification appelant */
+            c.clid,
+            c.cnam,
+
+            /* Contexte et applications */
             c.dcontext AS context,
             c.lastapp,
-            c.cnam,
+            c.lastdata,
+
+            /* État de l'appel */
+            c.disposition,
+
+            /* Durées */
+            c.duration,
+            c.billsec,
+
+            /* Routage et facturation */
             c.did,
             c.accountcode,
-            c.userfield,
+            c.peeraccount,
+
+            /* Flags et données personnalisées */
             c.amaflags,
-            c.duration,
-            c.clid
+            c.userfield
+
         FROM asteriskcdrdb.cdr c
         WHERE c.calldate BETWEEN '{date_debut_sql}' AND '{date_fin_sql}'
         AND c.lastapp = 'Dial'
