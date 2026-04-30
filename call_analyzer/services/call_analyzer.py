@@ -133,9 +133,10 @@ class CallAnalyzer:
         return sum(e.billsec for e in events)
 
     def _identify_click_to_call(self, events: List[CallEvent]) -> Tuple[
-            bool, Optional[str], Optional[str], int, List[str]]:
+            bool, Optional[str], Optional[str], int, List[str], List[str]]:
         is_click_to_call = any(e.cnam and 'Répondre pour appeler le' in e.cnam for e in events)
-        forward = []
+        initiator_answered: List[str] = []
+        dest_forwards: List[str] = []
 
         if is_click_to_call and events:
             first_event = events[0]
@@ -150,13 +151,30 @@ class CallAnalyzer:
             dst = first_event.dst
             duration = event_macro_dial.billsec
 
+            # Base du canal CTC (sans ;1/;2) pour distinguer initiateur (;2) et destination (;1).
+            ctc_base = first_event.channel.rsplit(';', 1)[0]
+
             for fe in self._get_forward_call_events(events):
                 duration += fe.billsec
-                forward.append(fe.dst)
+                fwd_base = fe.channel.rsplit(';', 1)[0]
+                # Renvoi côté destination : un followme-check relie CTC;1 → Local/fwd;1.
+                is_dest_side = any(
+                    e.context == 'followme-check'
+                    and e.channel.endswith(';1')
+                    and e.channel.rsplit(';', 1)[0] == ctc_base
+                    and e.dstchannel
+                    and e.dstchannel.rsplit(';', 1)[0] == fwd_base
+                    for e in events
+                )
+                if is_dest_side:
+                    dest_forwards.append(fe.dst + (' (ANSWERED)' if fe.disposition == 'ANSWERED' else ''))
+                elif fe.disposition == 'ANSWERED':
+                    # Renvoi côté initiateur ayant décroché (ex : mobile de 163).
+                    initiator_answered.append(fe.dst + ' (ANSWERED)')
 
-            return True, src, dst, duration, forward
+            return True, src, dst, duration, initiator_answered, dest_forwards
 
-        return False, None, None, 0, forward
+        return False, None, None, 0, initiator_answered, dest_forwards
 
     def _identify_actions_by_context(self, events: List[CallEvent]) -> Tuple[
             Optional[str], Optional[str], Optional[str], Optional[str], str, List[dict]]:
@@ -233,24 +251,32 @@ class CallAnalyzer:
                     call_type = 'external'
                 else:
                     call_type = 'standard'
-                add_to_path(dst_number, call_type, event.disposition, timestamp=event.timestamp)
+                # La jambe ;1 du canal Local (followme-check avec dstchannel=Local/...)
+                # porte event.dst=163 comme dst_number (is_local=True) mais ne représente
+                # pas un nouveau saut — le gestionnaire followme-check ci-dessous s'en charge.
+                if not (event.context == 'followme-check' and is_local):
+                    add_to_path(dst_number, call_type, event.disposition, timestamp=event.timestamp)
 
-            if event.context == 'followme-check' and event.dstchannel and 'Local/' in event.dstchannel and event.disposition == 'ANSWERED':
+            if event.context == 'followme-check' and event.dstchannel and 'Local/' in event.dstchannel:
                 local_key = event.dstchannel.split(';')[0]
                 match = next(
                     (e for e in events if e.channel and e.channel.startswith(local_key) and e.context == 'from-internal'),
                     None
                 )
                 if match:
-                    forwards_to = self._extract_number_from_channel(match.dstchannel) or match.dst
-                    add_to_path(forwards_to, 'forwarded', match.disposition, timestamp=match.timestamp)
-                    virtual_forward = forwards_to
-                    continue
+                    fwd_number = self._extract_number_from_channel(match.dstchannel) or match.dst
+                    if not forwards_to:
+                        forwards_to = fwd_number
+                    if event.disposition == 'ANSWERED':
+                        add_to_path(fwd_number, 'forwarded', match.disposition, timestamp=match.timestamp)
+                        virtual_forward = fwd_number
+                        continue
 
             if event.context == 'from-internal':
                 if event.channel and 'Local/0' in event.channel:
-                    if event.disposition == 'ANSWERED':
+                    if not forwards_to:
                         forwards_to = dst_number
+                    if event.disposition == 'ANSWERED':
                         add_to_path(dst_number, 'forward_answered', event.disposition, timestamp=event.timestamp)
                     virtual_forward = dst_number
                 elif 'Local/' in event.channel and not is_local:
@@ -308,9 +334,19 @@ class CallAnalyzer:
 
         # Click-to-Call path
         if is_ctc:
-            _, src_ctc, dst_ctc, duration_ctc, forward_numbers = self._identify_click_to_call(events)
+            _, src_ctc, dst_ctc, duration_ctc, initiator_answered, dest_forwards = self._identify_click_to_call(events)
             if src_ctc and dst_ctc:
                 is_both_internal = self._is_internal_number(src_ctc) and self._is_internal_number(dst_ctc)
+                # La destination a-t-elle décroché directement (pas via un renvoi) ?
+                first_ev = events[0]
+                dst_answered = (
+                    first_ev.disposition == 'ANSWERED'
+                    and bool(first_ev.dstchannel)
+                    and 'Local/' not in first_ev.dstchannel
+                )
+                dst_entry = dst_ctc + (' (ANSWERED)' if dst_answered else '')
+                # Structure : initiateur --> [appareil répondant] --> destination --> [renvois destination]
+                path_parts = [src_ctc] + initiator_answered + [dst_entry] + dest_forwards
                 return Call(
                     start_time=events[0].timestamp,
                     uniqueid=events[0].linkedid,
@@ -320,9 +356,10 @@ class CallAnalyzer:
                     status=self._get_call_status(events, dispositions, has_forward),
                     type=self._get_call_direction(events, is_both_internal, trunk_in_channel, trunk_in_dstchannel),
                     is_internal=is_both_internal,
-                    transfers_from=None, transfers_to=None, forwards_from=None, forwards_to=None,
+                    transfers_from=None, transfers_to=None, forwards_from=None,
+                    forwards_to=dest_forwards[0].split(' ')[0] if dest_forwards else None,
                     is_click_to_call=True,
-                    final_path=" --> ".join([src_ctc] + forward_numbers + [dst_ctc]),
+                    final_path=" --> ".join(path_parts),
                     original_caller_name=events[0].cnam,
                     did=events[0].did,
                     accountcode=events[0].accountcode,
