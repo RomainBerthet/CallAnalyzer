@@ -1,17 +1,17 @@
 import logging
 import os
-from typing import Dict, Union
+from typing import Dict, Optional, Tuple, Union
 
 import pandas as pd
 
-from call_analyzer.infrastructure.db_connector import DatabaseConnector
-from call_analyzer.infrastructure.excel_reporter import ExcelExporter
-from call_analyzer.infrastructure.gql_connector import GqlConnector
-from call_analyzer.infrastructure.query_builder import QueryBuilder
-from call_analyzer.services.call_analyzer import CallAnalyzer
-from call_analyzer.services.statistics import StatisticsGenerator
+from ..infrastructure.db_connector import DatabaseConnector
+from ..infrastructure.excel_reporter import ExcelExporter
+from ..infrastructure.gql_connector import GqlConnector
+from ..infrastructure.query_builder import QueryBuilder
+from ..services.call_analyzer import CallAnalyzer
+from ..services.statistics import StatisticsGenerator
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('rc_global.telephonie')
 
 class CDRAnalyzerApp:
     """Application principale pour l'analyse des CDR."""
@@ -52,15 +52,15 @@ class CDRAnalyzerApp:
         """Charge les numéros internes depuis la base de données."""
         try:
             query = QueryBuilder.build_internal_numbers_query()
-            result = self.gql_connector.execute_query(query)
-            extensions = list(map(lambda x: x['extensionId'], result['fetchAllExtensions.extension'][0]))
-            ring_groups = list(map(lambda x: str(x['groupNumber']), result['fetchAllRingGroups.ringgroups'][0]))
+            result = self.gql_connector.execute_gql_query(query)
+            extensions = list(map(lambda x: x['extensionId'], result['fetchAllExtensions']['extension']))
+            ring_groups = list(map(lambda x: str(x['groupNumber']), result['fetchAllRingGroups']['ringgroups']))
             self.internal_numbers = set(extensions).union(set(ring_groups))
             logger.info(f"Chargement réussi de {len(self.internal_numbers)} numéros internes")
-            result_extensions_dict = result['fetchAllExtensions.extension'][0]
+            result_extensions_dict = result['fetchAllExtensions']['extension']
             df = pd.json_normalize(result_extensions_dict)
             self.extensions_dict = dict(zip(df['extensionId'], df['user.name']))
-            result_ring_groups_dict = result['fetchAllRingGroups.ringgroups'][0]
+            result_ring_groups_dict = result['fetchAllRingGroups']['ringgroups']
             df = pd.json_normalize(result_ring_groups_dict)
             self.extensions_dict.update(dict(zip(df['groupNumber'].astype(str), df['description'])))
         except Exception as e:
@@ -68,7 +68,7 @@ class CDRAnalyzerApp:
             self.internal_numbers = set()
             self.extensions_dict = {}
 
-    def run_analysis(self, date_debut: str, date_fin: str, export: bool = False, output_dir: str = './output') -> Dict[str, str] or Dict:
+    def run_analysis(self, date_debut: str, date_fin: str, export: bool = False, output_dir: str = './output') -> Tuple[Optional[Dict], Optional[object]]:
         """Exécute l'analyse complète des appels.
 
         Args:
@@ -88,11 +88,12 @@ class CDRAnalyzerApp:
 
         # Construction de la requête et exécution
         query = QueryBuilder.build_call_query(date_debut, date_fin, self.reference_numbers)
+        logger.info(f"Exécution de la requête: {query}")
         df_calls = self.db_connector.execute_query(query)
 
         if df_calls.empty:
             logger.warning(f"Aucun appel trouvé entre {date_debut} et {date_fin}")
-            return {'status': 'no_data'}
+            return None, None
 
         # Analyse des appels
         analyzer = CallAnalyzer(self.internal_numbers, self.reference_numbers)
@@ -100,7 +101,7 @@ class CDRAnalyzerApp:
 
         if not calls:
             logger.warning("Aucun appel analysé")
-            return {'status': 'no_data'}
+            return None, None
 
         # Conversion en DataFrame
         df_analyzed = analyzer.to_dataframe(calls)
@@ -109,7 +110,7 @@ class CDRAnalyzerApp:
         statistics = StatisticsGenerator.calculate_statistics(df_analyzed, self.reference_numbers)
 
         if not export:
-            return statistics
+            return statistics, df_analyzed
 
         # Formatage de la période pour les noms de fichiers
         period_str = f"{pd.to_datetime(date_debut).strftime('%Y%m%d')}-{pd.to_datetime(date_fin).strftime('%Y%m%d')}"

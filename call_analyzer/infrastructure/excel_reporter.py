@@ -4,147 +4,82 @@ from typing import Dict, Optional, Union
 
 import pandas as pd
 
-from call_analyzer.services.statistics import StatisticsGenerator
+from ..services.statistics import StatisticsGenerator
 
 logger = logging.getLogger(__name__)
+
 
 class ExcelExporter:
     """Exporte les données et statistiques vers des fichiers Excel."""
 
     @staticmethod
     def format_duration(seconds: int) -> str:
-        """Formate une durée en secondes en format HH:MM:SS.
-
-        Args:
-            seconds: Nombre de secondes
-
-        Returns:
-            Durée formatée
-        """
         if pd.isna(seconds) or seconds == 0:
             return "00:00:00"
-
-        hours, remainder = divmod(int(seconds), 3600)
-        minutes, seconds = divmod(remainder, 60)
-        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
-    @staticmethod
-    def get_excel_column_name(index: int) -> str:
-        """Convertit un index (0-based) en nom de colonne Excel (A, B, ..., Z, AA, AB, ...).
-
-        Args:
-            index: Index de la colonne (0 pour A, 1 pour B, etc.)
-
-        Returns:
-            Nom de la colonne Excel (A, B, ..., Z, AA, AB, ...)
-        """
-        column_name = ""
-        index += 1  # Excel columns are 1-indexed
-        while index > 0:
-            index -= 1
-            column_name = chr(65 + (index % 26)) + column_name
-            index //= 26
-        return column_name
+        h, rem = divmod(int(seconds), 3600)
+        m, s = divmod(rem, 60)
+        return f"{h:02d}:{m:02d}:{s:02d}"
 
     @staticmethod
-    def export_calls_to_excel(df: pd.DataFrame, filename: str, extensions_dict: Optional[Dict[str, str]] = None) -> str:
-        """
-        Exporte les données d'appels vers un fichier Excel avec toutes les informations disponibles.
+    def _format_duration_series(series: pd.Series) -> pd.Series:
+        """Vectorised version of format_duration for a whole column."""
+        sec = series.fillna(0).astype(int)
+        h = sec // 3600
+        m = (sec % 3600) // 60
+        s = sec % 60
+        return h.map('{:02d}'.format) + ':' + m.map('{:02d}'.format) + ':' + s.map('{:02d}'.format)
 
-        Args:
-            df: DataFrame contenant les données d'appels
-            filename: Nom du fichier Excel
-            extensions_dict: Dictionnaire des extensions et leurs noms
+    @staticmethod
+    def _auto_column_widths(worksheet, df: pd.DataFrame):
+        """Ajuste les largeurs de colonnes en une passe vectorisée."""
+        for i, col in enumerate(df.columns):
+            # str.len() is vectorised; max of header vs data
+            max_len = max(
+                df[col].astype(str).str.len().max(),
+                len(str(col))
+            ) + 2
+            worksheet.column_dimensions[chr(65 + i)].width = min(int(max_len), 50)
 
-        Returns:
-            Chemin du fichier créé
-        """
+    @staticmethod
+    def export_calls_to_excel(df: pd.DataFrame, filename: str,
+                               extensions_dict: Optional[Dict[str, str]] = None) -> str:
         if df.empty:
             logger.warning("Aucune donnée à exporter vers Excel.")
             return ""
 
-        # Création d'une copie du DataFrame pour éviter de modifier l'original
         export_df = df.copy()
+        export_df['duree'] = ExcelExporter._format_duration_series(export_df['billsec'])
 
-        # Conversion des durées en format lisible
-        export_df['duree'] = export_df['billsec'].apply(ExcelExporter.format_duration)
-
-        # Formatage des temps d'attente
-        if 'wait_time' in export_df.columns:
-            export_df['temps_attente'] = export_df['wait_time'].apply(
-                lambda x: f"{int(x)}s" if pd.notna(x) else "")
-
-        if 'queue_wait_time' in export_df.columns:
-            export_df['temps_attente_queue'] = export_df['queue_wait_time'].apply(
-                lambda x: f"{int(x)}s" if pd.notna(x) else "")
-
-        # Ajout des noms d'extensions si disponibles
         if extensions_dict:
             export_df['src_name'] = export_df['src'].map(extensions_dict)
             export_df['dst_name'] = export_df['dst'].map(extensions_dict)
 
-        # Sélection et renommage des colonnes pour l'export
         columns_mapping = {
             'call_date': 'Date et heure',
-            'answer_date': 'Heure réponse',
             'src': 'Source',
-            'src_name': 'Nom source',
             'original_caller_name': 'Nom appelant',
             'dst': 'Destination',
             'dst_name': 'Nom destination',
-            'answering_party': 'Qui a répondu',  # NOUVEAU
-            'answering_party_name': 'Nom répondeur',  # NOUVEAU
             'duree': 'Durée',
-            'temps_attente': 'Temps attente',
             'status': 'Statut',
             'type_appel': 'Type',
-            'path': 'Chemin simple',
-            'detailed_path': 'Chemin détaillé',  # NOUVEAU
-            'segments_count': 'Nb segments',  # NOUVEAU
+            'path': "Chemin d'appel",
             'renvoi_depuis': 'Renvoi depuis',
             'renvoi_vers': 'Renvoi vers',
             'transfert_depuis': 'Transfert depuis',
             'transfert_vers': 'Transfert vers',
-            'went_to_voicemail': 'Messagerie vocale',
-            'voicemail_box': 'Boîte vocale',  # NOUVEAU
-            'queue_name': 'Queue',
-            'temps_attente_queue': 'Attente queue',
-            'has_ivr': 'IVR utilisé',  # NOUVEAU
-            'ivr_path': 'Chemin IVR',  # NOUVEAU
-            'ringgroup_used': 'RingGroup',  # NOUVEAU
-            'ringgroup_answerer': 'RG répondeur',  # NOUVEAU
-            'ringgroup_summary': 'Détails RG',  # NOUVEAU
-            'is_conference': 'Conférence',  # NOUVEAU
             'did': 'DID',
-            'sla_compliant_20s': 'SLA 20s',
-            'is_click_to_call': 'Click-to-Call',
         }
 
-        # Sélection des colonnes qui existent dans le DataFrame
-        export_columns = [col for col in columns_mapping.keys() if col in export_df.columns]
+        export_columns = [c for c in columns_mapping if c in export_df.columns]
+        export_df = export_df[export_columns].rename(columns={c: columns_mapping[c] for c in export_columns})
 
-        # Création du DataFrame d'export avec les colonnes sélectionnées et renommées
-        export_df = export_df[export_columns].rename(columns={col: columns_mapping[col] for col in export_columns})
-
-        # Ajout du répertoire si nécessaire
         os.makedirs(os.path.dirname(filename) if os.path.dirname(filename) else '.', exist_ok=True)
 
-        # Export vers Excel
         try:
             with pd.ExcelWriter(filename, engine='openpyxl') as writer:
                 export_df.to_excel(writer, sheet_name='Appels', index=False)
-
-                # Définition des largeurs de colonnes
-                worksheet = writer.sheets['Appels']
-                for i, col in enumerate(export_df.columns):
-                    max_length = max(
-                        export_df[col].astype(str).apply(len).max(),
-                        len(col)
-                    ) + 2
-                    # Utilise get_excel_column_name pour supporter plus de 26 colonnes (A-Z, AA-ZZ, etc.)
-                    column_letter = ExcelExporter.get_excel_column_name(i)
-                    worksheet.column_dimensions[column_letter].width = min(max_length, 50)
-
+                ExcelExporter._auto_column_widths(writer.sheets['Appels'], export_df)
             logger.info(f"Données exportées avec succès vers {filename}")
             return filename
         except Exception as e:
@@ -153,220 +88,100 @@ class ExcelExporter:
 
     @staticmethod
     def export_statistics_to_excel(df: pd.DataFrame, statistics: Dict[str, Union[int, float]],
-                                   filename: str, period: str) -> str:
-        """Exporte les statistiques d'appels vers un fichier Excel.
-
-        Args:
-            df: DataFrame contenant les données d'appels
-            statistics: Dictionnaire des statistiques globales
-            filename: Nom du fichier Excel
-            period: Période des données (ex: "Janvier 2025")
-
-        Returns:
-            Chemin du fichier créé
-        """
+                                    filename: str, period: str) -> str:
         if df.empty:
             logger.warning("Aucune donnée à exporter vers Excel.")
             return ""
 
-        # Création du DataFrame de statistiques horaires et journalières
         hourly_stats = StatisticsGenerator.calculate_hourly_statistics(df)
         daily_stats = StatisticsGenerator.calculate_daily_statistics(df)
         top_dest = StatisticsGenerator.top_destinations(df)
         top_src = StatisticsGenerator.top_sources(df)
 
-        # Format des statistiques globales pour l'affichage (toutes les nouvelles métriques)
-        stats_for_display = {
-            'Statistiques globales': [
-                # En-tête
-                {'Métrique': '=== PÉRIODE ===', 'Valeur': ''},
-                {'Métrique': 'Période', 'Valeur': period},
-                {'Métrique': '', 'Valeur': ''},
+        fmt = ExcelExporter.format_duration
+        nb_recus = statistics['nb_appels_recus']
+        nb_manques = statistics['nb_appels_manques']
 
-                # Volumétrie de base
-                {'Métrique': '=== VOLUMÉTRIE ===', 'Valeur': ''},
-                {'Métrique': 'Nombre total d\'appels', 'Valeur': statistics['nb_appels_total']},
-                {'Métrique': 'Appels reçus', 'Valeur': statistics['nb_appels_recus']},
-                {'Métrique': '  - Reçus internes', 'Valeur': statistics['nb_appel_interne_recus']},
-                {'Métrique': '  - Reçus externes', 'Valeur': statistics['nb_appels_recus'] - statistics['nb_appel_interne_recus']},
-                {'Métrique': 'Appels émis', 'Valeur': statistics['nb_appels_emis']},
-                {'Métrique': '  - Émis internes', 'Valeur': statistics['nb_appel_interne_emis']},
-                {'Métrique': '  - Émis externes', 'Valeur': statistics['nb_appels_emis'] - statistics['nb_appel_interne_emis']},
-                {'Métrique': '', 'Valeur': ''},
+        global_stats_df = pd.DataFrame([
+            {'Métrique': 'Période', 'Valeur': period},
+            {'Métrique': "Nombre total d'appels", 'Valeur': statistics['nb_appels_total']},
+            {'Métrique': 'Appels reçus', 'Valeur': nb_recus},
+            {'Métrique': 'Appels reçus internes', 'Valeur': statistics['nb_appel_interne_recus']},
+            {'Métrique': 'Appels reçus externes', 'Valeur': nb_recus - statistics['nb_appel_interne_recus']},
+            {'Métrique': 'Appels émis', 'Valeur': statistics['nb_appels_emis']},
+            {'Métrique': 'Appels émis internes', 'Valeur': statistics['nb_appel_interne_emis']},
+            {'Métrique': 'Appels émis externes', 'Valeur': statistics['nb_appels_emis'] - statistics['nb_appel_interne_emis']},
+            {'Métrique': 'Appels internes', 'Valeur': statistics['nb_appels_internes']},
+            {'Métrique': 'Appels manqués', 'Valeur': nb_manques},
+            {'Métrique': 'Appels manqués internes', 'Valeur': statistics['nb_appels_internes_manques']},
+            {'Métrique': 'Appels manqués externes', 'Valeur': statistics['nb_appels_externes_manques']},
+            {'Métrique': 'Taux de réponse',
+             'Valeur': f"{(nb_recus - nb_manques) / nb_recus * 100:.1f}%" if nb_recus > 0 else "N/A"},
+            {'Métrique': 'Durée totale des appels', 'Valeur': fmt(statistics['duree_appels_total'])},
+            {'Métrique': 'Durée des appels reçus', 'Valeur': fmt(statistics['duree_appels_recus'])},
+            {'Métrique': 'Durée des appels reçus internes', 'Valeur': fmt(statistics['duree_appels_internes_recus'])},
+            {'Métrique': 'Durée des appels reçus externes', 'Valeur': fmt(statistics['duree_appels_externes_recus'])},
+            {'Métrique': 'Durée des appels émis', 'Valeur': fmt(statistics['duree_appels_emis'])},
+            {'Métrique': 'Durée des appels émis internes', 'Valeur': fmt(statistics['duree_appels_internes_emis'])},
+            {'Métrique': 'Durée des appels émis externes', 'Valeur': fmt(statistics['duree_appels_externes_emis'])},
+            {'Métrique': 'Durée moyenne des appels', 'Valeur': fmt(statistics['duree_moyenne_appels'])},
+            {'Métrique': 'Durée moyenne internes', 'Valeur': fmt(statistics['duree_moyenne_appels_internes'])},
+            {'Métrique': 'Durée moyenne externes', 'Valeur': fmt(statistics['duree_moyenne_appels_externes'])},
+            {'Métrique': 'Appels internes émis aboutis', 'Valeur': statistics['nb_appels_internes_aboutis']},
+            {'Métrique': 'Appels externes émis aboutis', 'Valeur': statistics['nb_appels_externes_aboutis']},
+            {'Métrique': 'Appels internes reçus répondus', 'Valeur': statistics['nb_appels_internes_repondus']},
+            {'Métrique': "Nombre de renvois d'appels", 'Valeur': statistics['nb_renvois_appels_recus']},
+            {'Métrique': "Durée des renvois d'appels", 'Valeur': fmt(statistics['duree_renvois_appels_recus'])},
+            {'Métrique': 'Appels Click-to-Call', 'Valeur': statistics['nb_click_to_call']},
+        ])
 
-                # Appels manqués et taux de réponse
-                {'Métrique': '=== APPELS MANQUÉS & TAUX DE RÉPONSE ===', 'Valeur': ''},
-                {'Métrique': 'Appels manqués totaux', 'Valeur': statistics['nb_appels_manques']},
-                {'Métrique': '  - Manqués internes', 'Valeur': statistics['nb_appels_internes_manques']},
-                {'Métrique': '  - Manqués externes', 'Valeur': statistics['nb_appels_externes_manques']},
-                {'Métrique': 'Taux de réponse global', 'Valeur': f"{statistics['taux_reponse_global']}%"},
-                {'Métrique': 'Taux de réponse externe', 'Valeur': f"{statistics['taux_reponse_externe']}%"},
-                {'Métrique': '', 'Valeur': ''},
-
-                # Durées
-                {'Métrique': '=== DURÉES ===', 'Valeur': ''},
-                {'Métrique': 'Durée totale des appels', 'Valeur': ExcelExporter.format_duration(statistics['duree_appels_total'])},
-                {'Métrique': 'Durée moyenne des appels', 'Valeur': ExcelExporter.format_duration(statistics['duree_moyenne_appels'])},
-                {'Métrique': 'Durée appels reçus', 'Valeur': ExcelExporter.format_duration(statistics['duree_appels_recus'])},
-                {'Métrique': '  - Durée appels reçus internes', 'Valeur': ExcelExporter.format_duration(statistics['duree_appels_internes_recus'])},
-                {'Métrique': '  - Durée appels reçus externes', 'Valeur': ExcelExporter.format_duration(statistics['duree_appels_externes_recus'])},
-                {'Métrique': 'Durée appels émis', 'Valeur': ExcelExporter.format_duration(statistics['duree_appels_emis'])},
-                {'Métrique': '  - Durée appels émis internes', 'Valeur': ExcelExporter.format_duration(statistics['duree_appels_internes_emis'])},
-                {'Métrique': '  - Durée appels émis externes', 'Valeur': ExcelExporter.format_duration(statistics['duree_appels_externes_emis'])},
-                {'Métrique': '', 'Valeur': ''},
-
-                # SLA (Service Level Agreement)
-                {'Métrique': '=== SLA (Service Level Agreement) ===', 'Valeur': ''},
-                {'Métrique': 'Appels répondus en < 20s', 'Valeur': f"{statistics['sla_20s_count']} ({statistics['sla_20s_percent']}%)"},
-                {'Métrique': 'Appels répondus en < 30s', 'Valeur': f"{statistics['sla_30s_count']} ({statistics['sla_30s_percent']}%)"},
-                {'Métrique': '', 'Valeur': ''},
-
-                # Temps d'attente
-                {'Métrique': '=== TEMPS D\'ATTENTE ===', 'Valeur': ''},
-                {'Métrique': 'Temps d\'attente moyen', 'Valeur': f"{statistics['temps_attente_moyen']}s"},
-                {'Métrique': 'Temps d\'attente minimum', 'Valeur': f"{statistics['temps_attente_min']}s"},
-                {'Métrique': 'Temps d\'attente maximum', 'Valeur': f"{statistics['temps_attente_max']}s"},
-                {'Métrique': '', 'Valeur': ''},
-
-                # Renvois et transferts
-                {'Métrique': '=== RENVOIS & TRANSFERTS ===', 'Valeur': ''},
-                {'Métrique': 'Nombre de renvois', 'Valeur': statistics['nb_renvois_appels_recus']},
-                {'Métrique': 'Durée des renvois', 'Valeur': ExcelExporter.format_duration(statistics['duree_renvois_appels_recus'])},
-                {'Métrique': 'Nombre de transferts', 'Valeur': statistics['nb_transferts']},
-                {'Métrique': 'Nombre de forwards', 'Valeur': statistics['nb_forwards']},
-                {'Métrique': '', 'Valeur': ''},
-
-                # Queues (files d'attente)
-                {'Métrique': '=== QUEUES (FILES D\'ATTENTE) ===', 'Valeur': ''},
-                {'Métrique': 'Appels passés par queue', 'Valeur': statistics['nb_appels_queue']},
-                {'Métrique': 'Temps d\'attente moyen en queue', 'Valeur': f"{statistics['temps_attente_queue_moyen']}s"},
-                {'Métrique': 'Temps d\'attente max en queue', 'Valeur': f"{statistics['temps_attente_queue_max']}s"},
-                {'Métrique': '', 'Valeur': ''},
-
-                # Messagerie vocale
-                {'Métrique': '=== MESSAGERIE VOCALE ===', 'Valeur': ''},
-                {'Métrique': 'Appels vers messagerie vocale', 'Valeur': statistics['nb_appels_voicemail']},
-                {'Métrique': 'Taux de messagerie vocale', 'Valeur': f"{statistics['taux_voicemail']}%"},
-                {'Métrique': '', 'Valeur': ''},
-
-                # Autres métriques
-                {'Métrique': '=== AUTRES MÉTRIQUES ===', 'Valeur': ''},
-                {'Métrique': 'Appels Click-to-Call', 'Valeur': statistics['nb_click_to_call']},
-                {'Métrique': 'Nombre moyen de participants', 'Valeur': statistics['nb_participants_moyen']},
-                {'Métrique': 'Nombre moyen d\'événements CDR', 'Valeur': statistics['nb_events_moyen']},
-            ]
-        }
-
-        global_stats_df = pd.DataFrame(stats_for_display['Statistiques globales'])
-
-        # Préparation des données horaires pour l'affichage
-        if not hourly_stats.empty:
-            hourly_stats['duree_totale_format'] = hourly_stats['duree_totale'].apply(ExcelExporter.format_duration)
-            hourly_stats['duree_moyenne_format'] = hourly_stats['duree_moyenne'].apply(ExcelExporter.format_duration)
-            hourly_stats['taux_reponse'] = (hourly_stats['nb_appels_repondus'] / hourly_stats['nb_appels'] * 100).round(1)
-            hourly_stats['heure_format'] = hourly_stats['hour'].apply(lambda x: f"{x:02d}h-{(x + 1):02d}h")
-
-        # Préparation des données journalières pour l'affichage
-        if not daily_stats.empty:
-            daily_stats['duree_totale_format'] = daily_stats['duree_totale'].apply(ExcelExporter.format_duration)
-            daily_stats['duree_moyenne_format'] = daily_stats['duree_moyenne'].apply(ExcelExporter.format_duration)
-            daily_stats['taux_reponse'] = (daily_stats['nb_appels_repondus'] / daily_stats['nb_appels'] * 100).round(1)
-            daily_stats['date_format'] = pd.to_datetime(daily_stats['date']).dt.strftime('%d/%m/%Y')
-
-        # Génération des statistiques
-        queue_stats = StatisticsGenerator.calculate_queue_statistics(df)
-        sla_stats = StatisticsGenerator.calculate_sla_statistics(df)
-        wait_dist = StatisticsGenerator.calculate_wait_time_distribution(df)
-
-        # NOUVELLES statistiques IVR et RingGroups
-        ivr_stats = StatisticsGenerator.calculate_ivr_statistics(df)
-        ringgroup_stats = StatisticsGenerator.calculate_ringgroup_statistics_detailed(df)
-
-        # Export vers Excel
         try:
             with pd.ExcelWriter(filename, engine='openpyxl') as writer:
-                # Feuille des statistiques globales
                 global_stats_df.to_excel(writer, sheet_name='Stats Globales', index=False)
+                ExcelExporter._auto_column_widths(writer.sheets['Stats Globales'], global_stats_df)
 
-                # Feuille des statistiques horaires
                 if not hourly_stats.empty:
-                    hourly_display = hourly_stats[
-                        ['heure_format', 'nb_appels', 'nb_appels_repondus', 'taux_reponse', 'duree_totale_format', 'duree_moyenne_format']]
-                    hourly_display.columns = ['Heure', 'Nb Appels', 'Nb Répondus', 'Taux Réponse (%)', 'Durée Totale', 'Durée Moyenne']
-                    hourly_display.to_excel(writer, sheet_name='Stats par Heure', index=False)
+                    h = hourly_stats.copy()
+                    h['duree_totale_format'] = ExcelExporter._format_duration_series(h['duree_totale'])
+                    h['duree_moyenne_format'] = ExcelExporter._format_duration_series(h['duree_moyenne'])
+                    h['taux_reponse'] = (h['nb_appels_repondus'] / h['nb_appels'] * 100).round(1)
+                    h['heure_format'] = h['hour'].apply(lambda x: f"{x:02d}h-{x + 1:02d}h")
+                    out = h[['heure_format', 'nb_appels', 'nb_appels_repondus', 'taux_reponse',
+                              'duree_totale_format', 'duree_moyenne_format']]
+                    out.columns = ['Heure', 'Nb Appels', 'Nb Répondus', 'Taux Réponse (%)', 'Durée Totale', 'Durée Moyenne']
+                    out.to_excel(writer, sheet_name='Stats par Heure', index=False)
+                    ExcelExporter._auto_column_widths(writer.sheets['Stats par Heure'], out)
 
-                # Feuille des statistiques journalières
                 if not daily_stats.empty:
-                    daily_display = daily_stats[
-                        ['date_format', 'nb_appels', 'nb_appels_recus', 'nb_appels_emis', 'nb_appels_repondus', 'taux_reponse', 'duree_totale_format', 'duree_moyenne_format']]
-                    daily_display.columns = ['Date', 'Nb Appels', 'Nb Reçus', 'Nb Émis', 'Nb Répondus', 'Taux Réponse (%)', 'Durée Totale', 'Durée Moyenne']
-                    daily_display.to_excel(writer, sheet_name='Stats par Jour', index=False)
+                    d = daily_stats.copy()
+                    d['duree_totale_format'] = ExcelExporter._format_duration_series(d['duree_totale'])
+                    d['duree_moyenne_format'] = ExcelExporter._format_duration_series(d['duree_moyenne'])
+                    d['taux_reponse'] = (d['nb_appels_repondus'] / d['nb_appels'] * 100).round(1)
+                    d['date_format'] = pd.to_datetime(d['date']).dt.strftime('%d/%m/%Y')
+                    out = d[['date_format', 'nb_appels', 'nb_appels_recus', 'nb_appels_emis',
+                              'nb_appels_repondus', 'taux_reponse', 'duree_totale_format', 'duree_moyenne_format']]
+                    out.columns = ['Date', 'Nb Appels', 'Nb Reçus', 'Nb Émis', 'Nb Répondus',
+                                   'Taux Réponse (%)', 'Durée Totale', 'Durée Moyenne']
+                    out.to_excel(writer, sheet_name='Stats par Jour', index=False)
+                    ExcelExporter._auto_column_widths(writer.sheets['Stats par Jour'], out)
 
-                # Feuille des principales destinations
                 if not top_dest.empty:
-                    top_dest['duree_totale_format'] = top_dest['duree_totale'].apply(ExcelExporter.format_duration)
-                    top_dest['duree_moyenne_format'] = top_dest['duree_moyenne'].apply(ExcelExporter.format_duration)
-                    dest_display = top_dest[['dst', 'nb_appels', 'nb_repondus', 'taux_reponse', 'duree_totale_format', 'duree_moyenne_format']]
-                    dest_display.columns = ['Destination', 'Nb Appels', 'Nb Répondus', 'Taux Réponse (%)', 'Durée Totale', 'Durée Moyenne']
-                    dest_display.to_excel(writer, sheet_name='Top Destinations', index=False)
+                    td = top_dest.copy()
+                    td['duree_totale_format'] = ExcelExporter._format_duration_series(td['duree_totale'])
+                    td['duree_moyenne_format'] = ExcelExporter._format_duration_series(td['duree_moyenne'])
+                    out = td[['dst', 'nb_appels', 'nb_repondus', 'taux_reponse', 'duree_totale_format', 'duree_moyenne_format']]
+                    out.columns = ['Destination', 'Nb Appels', 'Nb Répondus', 'Taux Réponse (%)', 'Durée Totale', 'Durée Moyenne']
+                    out.to_excel(writer, sheet_name='Top Destinations', index=False)
+                    ExcelExporter._auto_column_widths(writer.sheets['Top Destinations'], out)
 
-                # Feuille des principales sources
                 if not top_src.empty:
-                    top_src['duree_totale_format'] = top_src['duree_totale'].apply(ExcelExporter.format_duration)
-                    top_src['duree_moyenne_format'] = top_src['duree_moyenne'].apply(ExcelExporter.format_duration)
-                    src_display = top_src[['src', 'nb_appels', 'nb_repondus', 'taux_reponse', 'duree_totale_format', 'duree_moyenne_format']]
-                    src_display.columns = ['Source', 'Nb Appels', 'Nb Répondus', 'Taux Réponse (%)', 'Durée Totale', 'Durée Moyenne']
-                    src_display.to_excel(writer, sheet_name='Top Sources', index=False)
-
-                # Feuille des statistiques SLA
-                if not sla_stats.empty:
-                    sla_display = sla_stats.copy()
-                    sla_display.columns = ['Seuil (s)', 'Conformes', 'Total', 'Pourcentage (%)']
-                    sla_display.to_excel(writer, sheet_name='SLA', index=False)
-
-                # Feuille des statistiques de queues
-                if not queue_stats.empty:
-                    queue_stats['duree_totale_format'] = queue_stats['duree_totale'].apply(ExcelExporter.format_duration)
-                    queue_stats['duree_moyenne_format'] = queue_stats['duree_moyenne'].apply(ExcelExporter.format_duration)
-                    queue_stats['temps_attente_moyen_format'] = queue_stats['temps_attente_moyen'].apply(lambda x: f"{x}s")
-                    queue_stats['temps_attente_max_format'] = queue_stats['temps_attente_max'].apply(lambda x: f"{x}s")
-                    queue_display = queue_stats[['queue_name', 'nb_appels', 'nb_repondus', 'taux_reponse',
-                                                  'duree_totale_format', 'duree_moyenne_format',
-                                                  'temps_attente_moyen_format', 'temps_attente_max_format']]
-                    queue_display.columns = ['Queue', 'Nb Appels', 'Nb Répondus', 'Taux Réponse (%)',
-                                              'Durée Totale', 'Durée Moyenne', 'Attente Moy.', 'Attente Max']
-                    queue_display.to_excel(writer, sheet_name='Queues', index=False)
-
-                # Feuille de distribution des temps d'attente
-                if not wait_dist.empty:
-                    wait_display = wait_dist.copy()
-                    wait_display.columns = ['Tranche de Temps', 'Nombre d\'Appels', 'Pourcentage (%)']
-                    wait_display.to_excel(writer, sheet_name='Distribution Attente', index=False)
-
-                # Feuille des statistiques IVR (NOUVEAU)
-                if not ivr_stats.empty:
-                    ivr_display = ivr_stats.copy()
-                    ivr_display.columns = ['Total Appels IVR', 'IVR Répondus', 'IVR Abandonnés',
-                                          'Taux Abandon (%)', 'Chemins Uniques', 'Chemin+ Fréquent',
-                                          'Fréquence Chemin+']
-                    ivr_display.to_excel(writer, sheet_name='IVR', index=False)
-
-                # Feuille des RingGroups détaillés (NOUVEAU)
-                if not ringgroup_stats.empty:
-                    rg_display = ringgroup_stats.copy()
-                    rg_display.columns = ['RingGroup', 'Nb Appels', 'Nb Répondus', 'Sonnerie Moy. (s)',
-                                         'Sonnerie Max (s)', 'Taux Réponse (%)', 'Membre Principal',
-                                         'Réponses Membre']
-                    rg_display.to_excel(writer, sheet_name='RingGroups Détaillés', index=False)
-
-                # Ajustement des largeurs de colonnes pour toutes les feuilles
-                for sheet_name in writer.sheets:
-                    worksheet = writer.sheets[sheet_name]
-                    for i, col in enumerate(worksheet.iter_cols(min_row=1, max_row=1)):
-                        max_length = len(str(col[0].value)) + 2
-                        # Utilise get_excel_column_name pour supporter plus de 26 colonnes
-                        column_letter = ExcelExporter.get_excel_column_name(i)
-                        worksheet.column_dimensions[column_letter].width = min(max_length, 50)
+                    ts = top_src.copy()
+                    ts['duree_totale_format'] = ExcelExporter._format_duration_series(ts['duree_totale'])
+                    ts['duree_moyenne_format'] = ExcelExporter._format_duration_series(ts['duree_moyenne'])
+                    out = ts[['src', 'nb_appels', 'nb_repondus', 'taux_reponse', 'duree_totale_format', 'duree_moyenne_format']]
+                    out.columns = ['Source', 'Nb Appels', 'Nb Répondus', 'Taux Réponse (%)', 'Durée Totale', 'Durée Moyenne']
+                    out.to_excel(writer, sheet_name='Top Sources', index=False)
+                    ExcelExporter._auto_column_widths(writer.sheets['Top Sources'], out)
 
             logger.info(f"Statistiques exportées avec succès vers {filename}")
             return filename

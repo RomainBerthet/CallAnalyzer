@@ -70,6 +70,7 @@ class QueryBuilder:
             conditions.append(f"src = '{num}'")
             conditions.append(f"dst = '{num}'")
             conditions.append(f"did = '{num}'")
+            conditions.append(f"cnum = '{num}'")
             conditions.append(f"channel LIKE '%%PJSIP/{num}%%'")
             conditions.append(f"dstchannel LIKE '%%PJSIP/{num}%%'")
 
@@ -95,7 +96,6 @@ class QueryBuilder:
         filter_condition = QueryBuilder.build_filter_condition(numeros) if numeros else ""
 
         # Requête optimisée avec CTE (Common Table Expression) pour meilleures performances
-        # Récupère TOUS les champs CDR disponibles dans FreePBX/Asterisk
         query = f"""
         WITH filtered_calls AS (
             SELECT linkedid
@@ -104,53 +104,27 @@ class QueryBuilder:
             {filter_condition}
             GROUP BY linkedid
         )
-        SELECT
-            /* Horodatage */
+        SELECT 
             c.calldate,
-
-            /* Identifiants */
             c.uniqueid,
             c.linkedid,
-            c.sequence,
-
-            /* Numéros et canaux */
             c.src,
             c.dst,
-            c.cnum,
             c.channel,
             c.dstchannel,
-
-            /* Identification appelant */
-            c.clid,
-            c.cnam,
-            c.outbound_cnum,
-            c.outbound_cnam,
-            c.dst_cnam,
-
-            /* Contexte et applications */
+            c.disposition,
+            c.cnum,
+            c.billsec,
+            c.sequence,
             c.dcontext AS context,
             c.lastapp,
-            c.lastdata,
-
-            /* État de l'appel */
-            c.disposition,
-
-            /* Durées */
-            c.duration,
-            c.billsec,
-
-            /* Routage et facturation */
+            c.cnam,
             c.did,
             c.accountcode,
-            c.peeraccount,
-
-            /* Flags et données personnalisées */
-            c.amaflags,
             c.userfield,
-
-            /* Enregistrement */
-            c.recordingfile
-
+            c.amaflags,
+            c.duration,
+            c.clid
         FROM asteriskcdrdb.cdr c
         WHERE c.calldate BETWEEN '{date_debut_sql}' AND '{date_fin_sql}'
         AND c.lastapp = 'Dial'
