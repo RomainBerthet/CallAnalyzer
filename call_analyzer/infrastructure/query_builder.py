@@ -97,39 +97,106 @@ class QueryBuilder:
 
         # Requête optimisée avec CTE (Common Table Expression) pour meilleures performances
         query = f"""
-        SELECT 
-            c.calldate,
-            c.uniqueid,
-            c.linkedid,
-            c.src,
-            c.dst,
-            c.channel,
-            c.dstchannel,
-            c.disposition,
-            c.cnum,
-            c.billsec,
-            c.sequence,
-            c.dcontext AS context,
-            c.lastapp,
-            c.cnam,
-            c.did,
-            c.accountcode,
-            c.userfield,
-            c.amaflags,
-            c.duration,
-            c.clid
-        FROM asteriskcdrdb.cdr c
-        WHERE c.calldate BETWEEN '{date_debut_sql}' AND '{date_fin_sql}'
-        AND c.lastapp = 'Dial'
-        AND c.linkedid IN (
-            SELECT DISTINCT linkedid
-            FROM asteriskcdrdb.cdr
-            WHERE calldate BETWEEN '{date_debut_sql}' AND '{date_fin_sql}'
-            {filter_condition}
-        )
-        ORDER BY c.linkedid, c.sequence
+            SELECT 
+                c.calldate,
+                c.uniqueid,
+                c.linkedid,
+                c.src,
+                c.dst,
+                c.channel,
+                c.dstchannel,
+                c.disposition,
+                c.cnum,
+                c.billsec,
+                c.sequence,
+                c.dcontext AS context,
+                c.lastapp,
+                c.cnam,
+                c.did,
+                c.accountcode,
+                c.userfield,
+                c.amaflags,
+                c.duration,
+                c.clid
+            FROM asteriskcdrdb.cdr c
+            WHERE c.calldate BETWEEN '{date_debut_sql}' AND '{date_fin_sql}'
+            AND c.lastapp = 'Dial'
+            AND c.linkedid IN (
+                SELECT DISTINCT linkedid
+                FROM asteriskcdrdb.cdr
+                WHERE calldate BETWEEN '{date_debut_sql}' AND '{date_fin_sql}'
+                {filter_condition}
+            )
+            ORDER BY c.linkedid, c.sequence
         """
         return query
+
+    @staticmethod
+    def build_billing_sda_filter(sda_numbers: List[str]) -> str:
+        """Builds a SQL AND clause that matches rows where the SDA appears in src, cnum or did."""
+        if not sda_numbers:
+            return ""
+        variants: set = set()
+        for num in sda_numbers:
+            variants.add(num)
+            if num.startswith('0'):
+                variants.add(f"33{num[1:]}")
+                variants.add(f"+33{num[1:]}")
+            elif num.startswith('33') and len(num) > 2:
+                variants.add(f"0{num[2:]}")
+        quoted = ', '.join(f"'{n}'" for n in variants)
+        return f"AND (src IN ({quoted}) OR cnum IN ({quoted}) OR did IN ({quoted}))"
+
+    @staticmethod
+    def build_billing_query(date_debut: str, date_fin: str, sda_numbers: List[str]) -> str:
+        """
+        Billing query for IPBX that have the linkedid column.
+        Fetches all Dial events belonging to calls that involve the given SDA numbers.
+        Uses a JOIN-based subquery (faster than IN on MySQL 5.x/8.x).
+        """
+        start = QueryBuilder.format_date(date_debut)
+        end = QueryBuilder.format_date(date_fin)
+        sda_filter = QueryBuilder.build_billing_sda_filter(sda_numbers)
+        return f"""
+            SELECT c.calldate, c.uniqueid, c.linkedid, c.src, c.dst,
+                   c.channel, c.dstchannel, c.disposition, c.cnum, c.billsec,
+                   c.sequence, c.dcontext AS context, c.lastapp,
+                   c.cnam, c.did, c.accountcode, c.userfield, c.duration, c.clid
+            FROM asteriskcdrdb.cdr c
+            INNER JOIN (
+                SELECT DISTINCT linkedid
+                FROM asteriskcdrdb.cdr
+                WHERE calldate BETWEEN '{start}' AND '{end}'
+                {sda_filter}
+            ) relevant ON c.linkedid = relevant.linkedid
+            WHERE c.calldate BETWEEN '{start}' AND '{end}'
+            AND c.lastapp = 'Dial'
+            ORDER BY c.linkedid, c.sequence
+        """
+
+    @staticmethod
+    def build_billing_query_no_linkedid(date_debut: str, date_fin: str, sda_numbers: List[str]) -> str:
+        """
+        Simplified billing query for old IPBX that lack the linkedid column.
+        Fetches outgoing trunk Dial events where the SDA appears in src or cnum.
+        External renvoi detection is not possible without linkedid.
+        """
+        start = QueryBuilder.format_date(date_debut)
+        end = QueryBuilder.format_date(date_fin)
+        sda_filter = QueryBuilder.build_billing_sda_filter(sda_numbers)
+        return f"""
+            SELECT calldate, uniqueid, uniqueid AS linkedid, src, dst,
+                   channel, dstchannel, disposition, cnum, billsec,
+                   0 AS sequence, dcontext AS context, lastapp,
+                   NULL AS cnam, did, NULL AS accountcode, NULL AS userfield,
+                   NULL AS amaflags, duration, NULL AS clid
+            FROM asteriskcdrdb.cdr
+            WHERE calldate BETWEEN '{start}' AND '{end}'
+            AND lastapp = 'Dial'
+            AND dstchannel LIKE '%trunk%'
+            {sda_filter}
+            ORDER BY calldate
+        """
 
     @staticmethod
     def build_internal_numbers_query() -> str:

@@ -59,3 +59,13 @@ class DatabaseConnector:
         except Exception as e:
             logger.error(f"Erreur lors de l'exécution de la requête : {e}")
             raise
+
+    def has_column(self, table: str, column: str) -> bool:
+        """Returns True if the given column exists in table (MySQL SHOW COLUMNS)."""
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(text(f"SHOW COLUMNS FROM {table} LIKE '{column}'"))
+                return result.fetchone() is not None
+        except Exception as e:
+            logger.warning(f"Impossible de vérifier la colonne {column} dans {table}: {e}")
+            return False
