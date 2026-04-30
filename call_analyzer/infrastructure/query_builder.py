@@ -71,8 +71,8 @@ class QueryBuilder:
             conditions.append(f"dst = '{num}'")
             conditions.append(f"did = '{num}'")
             conditions.append(f"cnum = '{num}'")
-            conditions.append(f"channel LIKE '%%PJSIP/{num}%%'")
-            conditions.append(f"dstchannel LIKE '%%PJSIP/{num}%%'")
+            conditions.append(f"channel LIKE '%PJSIP/{num}%'")
+            conditions.append(f"dstchannel LIKE '%PJSIP/{num}%'")
 
         return " AND (" + " OR ".join(conditions) + ")"
 
@@ -140,4 +140,27 @@ class QueryBuilder:
         Returns:
             Requête GQL formatée
         """
-        return "query { fetchAllExtensions { status message totalCount extension { extensionId, user {name} } }  fetchAllRingGroups { status message totalCount ringgroups { groupNumber description } }}"
+        return """
+        query {
+          fetchAllExtensions {
+            status
+            message
+            totalCount
+            extension {
+              extensionId
+              user {
+                name
+              }
+            }
+          }
+          fetchAllRingGroups {
+            status
+            message
+            totalCount
+            ringgroups {
+              groupNumber
+              description
+            }
+          }
+        }
+        """
