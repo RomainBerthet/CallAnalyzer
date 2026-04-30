@@ -97,13 +97,6 @@ class QueryBuilder:
 
         # Requête optimisée avec CTE (Common Table Expression) pour meilleures performances
         query = f"""
-        WITH filtered_calls AS (
-            SELECT linkedid
-            FROM asteriskcdrdb.cdr
-            WHERE calldate BETWEEN '{date_debut_sql}' AND '{date_fin_sql}'
-            {filter_condition}
-            GROUP BY linkedid
-        )
         SELECT 
             c.calldate,
             c.uniqueid,
@@ -128,7 +121,12 @@ class QueryBuilder:
         FROM asteriskcdrdb.cdr c
         WHERE c.calldate BETWEEN '{date_debut_sql}' AND '{date_fin_sql}'
         AND c.lastapp = 'Dial'
-        AND c.linkedid IN (SELECT linkedid FROM filtered_calls)
+        AND c.linkedid IN (
+            SELECT DISTINCT linkedid
+            FROM asteriskcdrdb.cdr
+            WHERE calldate BETWEEN '{date_debut_sql}' AND '{date_fin_sql}'
+            {filter_condition}
+        )
         ORDER BY c.linkedid, c.sequence
         """
         return query
