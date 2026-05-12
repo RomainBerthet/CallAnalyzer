@@ -103,8 +103,17 @@ class CallAnalyzer:
             return 'NO ANSWER'
         return 'FAILED'
 
+    def _event_targets_number(self, event: CallEvent, number: Optional[str]) -> bool:
+        if not number:
+            return False
+        target = str(number)
+        dst = str(event.dst or '')
+        dstchannel_number = self._extract_number_from_channel(event.dstchannel or '') or ''
+        return dst == target or dstchannel_number == target
+
     def _get_call_billsec(self, events: List[CallEvent],
-                          has_forward: bool = None, has_group: bool = None) -> int:
+                          has_forward: bool = None, has_group: bool = None,
+                          forwards_to: Optional[str] = None) -> int:
         if not events:
             return 0
 
@@ -127,7 +136,28 @@ class CallAnalyzer:
             return billsec
 
         if has_forward:
-            return sum(e.billsec for e in events if 'Local/0' in e.channel and e.context == 'from-internal')
+            forward_events = self._get_forward_call_events(events)
+            billsec = sum(e.billsec for e in forward_events)
+            if billsec > 0:
+                return billsec
+
+            answered_forward_events = [
+                e for e in events
+                if e.billsec > 0
+                and e.disposition == 'ANSWERED'
+                and (
+                    self._event_targets_number(e, forwards_to)
+                    or (e.context in ('from-internal', 'outbound-allroutes') and 'trunk' in (e.dstchannel or '').lower())
+                )
+            ]
+            if answered_forward_events:
+                return max(e.billsec for e in answered_forward_events)
+
+            answered_events = [e.billsec for e in events if e.billsec > 0 and e.disposition == 'ANSWERED']
+            if answered_events:
+                return max(answered_events)
+
+            return 0
         if has_group:
             return sum(e.billsec for e in events if not (e.context == 'ext-group' and 'Local/' in e.dstchannel))
         return sum(e.billsec for e in events)
@@ -378,7 +408,7 @@ class CallAnalyzer:
             uniqueid=first_event.linkedid,
             source=first_event.src,
             destination=first_event.dst,
-            duration=self._get_call_billsec(events, has_forward, has_group),
+            duration=self._get_call_billsec(events, has_forward or bool(forwards_to), has_group, forwards_to),
             status=self._get_call_status(events, dispositions, has_forward),
             type=self._get_call_direction(events, is_internal, trunk_in_channel, trunk_in_dstchannel),
             is_internal=is_internal,
@@ -456,6 +486,8 @@ class CallAnalyzer:
             'is_click_to_call': call.is_click_to_call,
             'original_caller_name': call.original_caller_name,
             'did': call.did,
+            'accountcode': call.accountcode,
+            'userfield': call.userfield,
         } for call in calls]
 
         df = pd.DataFrame(data)
