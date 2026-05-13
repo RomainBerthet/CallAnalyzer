@@ -14,9 +14,11 @@ logger = logging.getLogger(__name__)
 class CallAnalyzer:
     """Analyse les données d'appels pour extraire des informations pertinentes."""
 
-    def __init__(self, internal_numbers: Set[str], reference_numbers: Optional[List[str]] = None):
-        self.internal_numbers = internal_numbers
+    def __init__(self, internal_numbers: Set[str], reference_numbers: Optional[List[str]] = None,
+                 ring_group_numbers: Optional[Set[str]] = None):
+        self.internal_numbers = {str(number) for number in internal_numbers}
         self.reference_numbers = reference_numbers
+        self.ring_group_numbers = {str(number) for number in ring_group_numbers} if ring_group_numbers else set()
         # Compile once — used many times per analysis run
         self._channel_patterns = [
             re.compile(r'PJSIP/(\d+)-'),
@@ -27,6 +29,31 @@ class CallAnalyzer:
 
     def _is_internal_number(self, number: str) -> bool:
         return str(number) in self.internal_numbers
+
+    def _is_ring_group_number(self, number: str) -> bool:
+        return str(number) in self.ring_group_numbers
+
+    def _get_path_entity_type(self, number: str, call_type: str) -> str:
+        if self._is_ring_group_number(number):
+            return 'ring_group'
+        if call_type in ('group_member', 'group_member_answered') or self._is_internal_number(number):
+            return 'extension'
+        return 'external'
+
+    def _format_path_label(self, number: str, call_type: str, disposition: str = None) -> str:
+        entity_type = self._get_path_entity_type(number, call_type)
+        if entity_type == 'ring_group':
+            label = f"Ring group {number}"
+        elif entity_type == 'extension':
+            label = f"Extension {number}"
+        else:
+            label = f"Externe {number}"
+
+        if disposition == 'ANSWERED':
+            return f"{label} (ANSWERED)"
+        if disposition == 'NO ANSWER':
+            return f"{label} (NO ANSWER)"
+        return label
 
     def _extract_number_from_channel(self, channel: str) -> Optional[str]:
         if not channel:
@@ -213,6 +240,7 @@ class CallAnalyzer:
         call_path_details = []
         virtual_forward = ''
         seen_path_keys: Set[str] = set()
+        last_path_key = ''
         group_members = {}
         internal_calls = {}
 
@@ -220,27 +248,30 @@ class CallAnalyzer:
             return number.split(" ")[0] if number else ''
 
         def add_to_path(number: str, call_type: str, disposition: str = None, timestamp=None):
+            nonlocal last_path_key
             if not number:
                 return
             suffix = f" ({disposition})" if disposition == 'ANSWERED' else ''
             path_key = number + suffix
-            last_in_path = path[-1] if path else ''
-            if (base_number(last_in_path) != base_number(path_key)
+            if (base_number(last_path_key) != base_number(path_key)
                     and path_key not in seen_path_keys
                     and base_number(path_key) != virtual_forward):
-                path.append(path_key)
+                path.append(self._format_path_label(number, call_type, disposition))
                 seen_path_keys.add(path_key)
+                last_path_key = path_key
                 call_path_details.append({
                     'number': number,
                     'type': call_type,
+                    'entity_type': self._get_path_entity_type(number, call_type),
                     'disposition': disposition,
-                    'timestamp': timestamp
+                    'timestamp': timestamp.isoformat() if hasattr(timestamp, 'isoformat') else timestamp,
                 })
 
         # Première passe: groupes et appels internes
         for event in events:
             is_local = event.dstchannel and 'Local/' in event.dstchannel
             src_number = self._extract_number_from_channel(event.channel) or event.src
+            group_member_number = self._extract_number_from_channel(event.dstchannel) if event.context == 'ext-group' else None
             dst_number = (event.dst if is_local
                           else self._extract_number_from_channel(event.dstchannel) or event.dst)
 
@@ -248,8 +279,8 @@ class CallAnalyzer:
                 group_id = event.dst
                 if group_id not in group_members:
                     group_members[group_id] = []
-                if dst_number and dst_number not in group_members[group_id]:
-                    group_members[group_id].append(dst_number)
+                if group_member_number and group_member_number not in group_members[group_id]:
+                    group_members[group_id].append(group_member_number)
 
             if event.context == 'from-internal':
                 call_id = f"{src_number}_{dst_number}_{event.timestamp}"
@@ -264,6 +295,7 @@ class CallAnalyzer:
         for event in events:
             is_local = event.dstchannel and 'Local/' in event.dstchannel
             src_number = self._extract_number_from_channel(event.channel) or event.src
+            group_member_number = self._extract_number_from_channel(event.dstchannel) if event.context == 'ext-group' else None
             dst_number = (event.dst if is_local
                           else self._extract_number_from_channel(event.dstchannel) or event.dst)
 
@@ -274,17 +306,23 @@ class CallAnalyzer:
 
             if src_number and dst_number:
                 if event.context == 'ext-group':
-                    call_type = 'group_call'
+                    call_type = 'ring_group'
+                    dst_number = event.dst
                 elif event.context == 'from-internal':
                     call_type = 'internal'
                 elif event.context in ('from-trunk', 'outbound-allroutes'):
                     call_type = 'external'
                 else:
                     call_type = 'standard'
+                if self._is_ring_group_number(dst_number):
+                    call_type = 'ring_group'
                 # La jambe ;1 du canal Local (followme-check avec dstchannel=Local/...)
                 # porte event.dst=163 comme dst_number (is_local=True) mais ne représente
                 # pas un nouveau saut — le gestionnaire followme-check ci-dessous s'en charge.
-                if not (event.context == 'followme-check' and is_local):
+                if not (
+                    (event.context == 'followme-check' and is_local)
+                    or (event.context == 'from-internal' and event.channel and 'Local/0' in event.channel)
+                ):
                     add_to_path(dst_number, call_type, event.disposition, timestamp=event.timestamp)
 
             if event.context == 'followme-check' and event.dstchannel and 'Local/' in event.dstchannel:
@@ -321,14 +359,14 @@ class CallAnalyzer:
 
             elif event.context == 'ext-group':
                 group_id = event.dst
-                if group_id in group_members and dst_number in group_members[group_id]:
+                if group_id in group_members and group_member_number in group_members[group_id]:
                     if event.disposition == 'ANSWERED':
-                        add_to_path(dst_number, 'group_answered', event.disposition, timestamp=event.timestamp)
+                        add_to_path(group_member_number, 'group_member_answered', event.disposition, timestamp=event.timestamp)
 
         # Appels internes manqués
         for call in internal_calls.values():
             if call['disposition'] == 'NO ANSWER' and call['dst'] not in seen_path_keys:
-                if base_number(path[-1] if path else '') != base_number(call['dst']):
+                if base_number(last_path_key) != base_number(call['dst']):
                     add_to_path(call['dst'], 'missed_internal', 'NO ANSWER', timestamp=call['time'])
 
         return transfers_from, transfers_to, forwards_from, forwards_to, " --> ".join(path), call_path_details
@@ -374,9 +412,47 @@ class CallAnalyzer:
                     and bool(first_ev.dstchannel)
                     and 'Local/' not in first_ev.dstchannel
                 )
-                dst_entry = dst_ctc + (' (ANSWERED)' if dst_answered else '')
                 # Structure : initiateur --> [appareil répondant] --> destination --> [renvois destination]
-                path_parts = [src_ctc] + initiator_answered + [dst_entry] + dest_forwards
+                path_parts = [self._format_path_label(src_ctc, 'source')]
+                path_parts.extend(
+                    self._format_path_label(item.split(' ')[0], 'click_to_call_answered', 'ANSWERED')
+                    for item in initiator_answered
+                )
+                path_parts.append(self._format_path_label(dst_ctc, 'destination', 'ANSWERED' if dst_answered else None))
+                path_parts.extend(
+                    self._format_path_label(item.split(' ')[0], 'forward_answered', 'ANSWERED')
+                    for item in dest_forwards
+                )
+                path_details = [{
+                    'number': src_ctc,
+                    'type': 'source',
+                    'entity_type': self._get_path_entity_type(src_ctc, 'source'),
+                    'disposition': None,
+                }]
+                path_details.extend(
+                    {
+                        'number': item.split(' ')[0],
+                        'type': 'click_to_call_answered',
+                        'entity_type': self._get_path_entity_type(item.split(' ')[0], 'click_to_call_answered'),
+                        'disposition': 'ANSWERED',
+                    }
+                    for item in initiator_answered
+                )
+                path_details.append({
+                    'number': dst_ctc,
+                    'type': 'destination',
+                    'entity_type': self._get_path_entity_type(dst_ctc, 'destination'),
+                    'disposition': 'ANSWERED' if dst_answered else None,
+                })
+                path_details.extend(
+                    {
+                        'number': item.split(' ')[0],
+                        'type': 'forward_answered',
+                        'entity_type': self._get_path_entity_type(item.split(' ')[0], 'forward_answered'),
+                        'disposition': 'ANSWERED',
+                    }
+                    for item in dest_forwards
+                )
                 return Call(
                     start_time=events[0].timestamp,
                     uniqueid=events[0].linkedid,
@@ -390,6 +466,7 @@ class CallAnalyzer:
                     forwards_to=dest_forwards[0].split(' ')[0] if dest_forwards else None,
                     is_click_to_call=True,
                     final_path=" --> ".join(path_parts),
+                    final_path_details=path_details,
                     original_caller_name=events[0].cnam,
                     did=events[0].did,
                     accountcode=events[0].accountcode,
@@ -400,7 +477,7 @@ class CallAnalyzer:
         if not first_event.src or not first_event.dst:
             return None
 
-        transfers_from, transfers_to, forwards_from, forwards_to, path, _ = self._identify_actions_by_context(events)
+        transfers_from, transfers_to, forwards_from, forwards_to, path, path_details = self._identify_actions_by_context(events)
         is_internal = self._is_internal_number(first_event.src) and self._is_internal_number(first_event.dst)
 
         return Call(
@@ -417,6 +494,7 @@ class CallAnalyzer:
             forwards_from=forwards_from,
             forwards_to=forwards_to,
             final_path=path,
+            final_path_details=path_details,
             is_click_to_call=False,
             original_caller_name=first_event.cnam,
             did=first_event.did,
@@ -483,6 +561,7 @@ class CallAnalyzer:
             'is_internal': call.is_internal,
             'renvoi_vers': call.forwards_to,
             'path': call.final_path,
+            'path_details': call.final_path_details,
             'is_click_to_call': call.is_click_to_call,
             'original_caller_name': call.original_caller_name,
             'did': call.did,
