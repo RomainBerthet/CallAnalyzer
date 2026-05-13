@@ -168,3 +168,152 @@ class CallAnalyzerTest(TestCase):
             [(step['number'], step['entity_type']) for step in result.iloc[0]['path_details']],
             [('101', 'extension'), ('777', 'internal_number')],
         )
+
+    def test_followme_path_keeps_forwarding_extension_before_external_target(self):
+        df = pd.DataFrame([
+            {
+                'calldate': datetime(2026, 5, 12, 13, 0, 0),
+                'uniqueid': 'call-4.1',
+                'linkedid': 'call-4',
+                'src': '117',
+                'dst': '130',
+                'channel': 'PJSIP/117-00000001',
+                'dstchannel': 'Local/0666828301@from-internal-00000002;1',
+                'disposition': 'ANSWERED',
+                'cnum': '117',
+                'billsec': 0,
+                'sequence': 1,
+                'context': 'followme-check',
+                'lastapp': 'Dial',
+            },
+            {
+                'calldate': datetime(2026, 5, 12, 13, 0, 1),
+                'uniqueid': 'call-4.2',
+                'linkedid': 'call-4',
+                'src': '130',
+                'dst': '0666828301',
+                'channel': 'Local/0666828301@from-internal-00000002;1',
+                'dstchannel': 'PJSIP/trunk-out-00000003',
+                'disposition': 'ANSWERED',
+                'cnum': '117',
+                'billsec': 35,
+                'sequence': 2,
+                'context': 'from-internal',
+                'lastapp': 'Dial',
+            },
+        ])
+
+        analyzer = CallAnalyzer(
+            internal_numbers={'117', '130'},
+            extension_numbers={'117', '130'},
+            display_names={'117': 'Baptiste GODARD', '130': 'Thomas CHAPOTIN'},
+        )
+        calls = analyzer.process_dataframe(df)
+        result = analyzer.to_dataframe(calls)
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(
+            result.iloc[0]['path'],
+            'Extension Baptiste GODARD (117) --> Extension Thomas CHAPOTIN (130) --> Externe 0666828301 (ANSWERED)',
+        )
+        self.assertEqual(
+            [(step['number'], step.get('display'), step['type'], step['entity_type'], step['disposition'])
+             for step in result.iloc[0]['path_details']],
+            [
+                ('117', 'Baptiste GODARD', 'source', 'extension', None),
+                ('130', 'Thomas CHAPOTIN', 'forward_source', 'extension', None),
+                ('0666828301', None, 'forwarded', 'external', 'ANSWERED'),
+            ],
+        )
+
+    def test_click_to_call_destination_forward_does_not_mark_destination_extension_answered(self):
+        df = pd.DataFrame([
+            {
+                'calldate': datetime(2026, 5, 12, 14, 0, 0),
+                'uniqueid': 'call-5.1',
+                'linkedid': 'call-5',
+                'src': '117',
+                'dst': '130',
+                'channel': 'Local/117@from-internal-00000001;2',
+                'dstchannel': 'Local/0600000001@from-internal-00000002;1',
+                'disposition': 'ANSWERED',
+                'cnum': '117',
+                'billsec': 0,
+                'sequence': 1,
+                'context': 'followme-check',
+                'lastapp': 'Dial',
+                'cnam': 'Répondre pour appeler le 130',
+            },
+            {
+                'calldate': datetime(2026, 5, 12, 14, 0, 1),
+                'uniqueid': 'call-5.2',
+                'linkedid': 'call-5',
+                'src': '117',
+                'dst': '0600000001',
+                'channel': 'Local/0600000001@from-internal-00000002;1',
+                'dstchannel': 'PJSIP/trunk-out-00000003',
+                'disposition': 'ANSWERED',
+                'cnum': '117',
+                'billsec': 8,
+                'sequence': 2,
+                'context': 'from-internal',
+                'lastapp': 'Dial',
+                'cnam': 'Répondre pour appeler le 130',
+            },
+            {
+                'calldate': datetime(2026, 5, 12, 14, 0, 2),
+                'uniqueid': 'call-5.3',
+                'linkedid': 'call-5',
+                'src': '117',
+                'dst': '130',
+                'channel': 'Local/117@from-internal-00000001;1',
+                'dstchannel': 'Local/0666828301@from-internal-00000004;1',
+                'disposition': 'ANSWERED',
+                'cnum': '117',
+                'billsec': 0,
+                'sequence': 3,
+                'context': 'followme-check',
+                'lastapp': 'Dial',
+                'cnam': 'Répondre pour appeler le 130',
+            },
+            {
+                'calldate': datetime(2026, 5, 12, 14, 0, 3),
+                'uniqueid': 'call-5.4',
+                'linkedid': 'call-5',
+                'src': '130',
+                'dst': '0666828301',
+                'channel': 'Local/0666828301@from-internal-00000004;1',
+                'dstchannel': 'PJSIP/trunk-out-00000005',
+                'disposition': 'ANSWERED',
+                'cnum': '117',
+                'billsec': 25,
+                'sequence': 4,
+                'context': 'from-internal',
+                'lastapp': 'Dial',
+                'cnam': 'Répondre pour appeler le 130',
+            },
+        ])
+
+        analyzer = CallAnalyzer(
+            internal_numbers={'117', '130'},
+            extension_numbers={'117', '130'},
+            display_names={'117': 'Baptiste GODARD', '130': 'Thomas CHAPOTIN'},
+        )
+        calls = analyzer.process_dataframe(df)
+        result = analyzer.to_dataframe(calls)
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(
+            result.iloc[0]['path'],
+            'Extension Baptiste GODARD (117) --> Externe 0600000001 (ANSWERED) --> Extension Thomas CHAPOTIN (130) --> Externe 0666828301 (ANSWERED)',
+        )
+        self.assertEqual(
+            [(step['number'], step.get('display'), step['type'], step['entity_type'], step['disposition'])
+             for step in result.iloc[0]['path_details']],
+            [
+                ('117', 'Baptiste GODARD', 'source', 'extension', None),
+                ('0600000001', None, 'click_to_call_answered', 'external', 'ANSWERED'),
+                ('130', 'Thomas CHAPOTIN', 'destination', 'extension', None),
+                ('0666828301', None, 'forward_answered', 'external', 'ANSWERED'),
+            ],
+        )
