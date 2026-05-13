@@ -56,7 +56,11 @@ class CallAnalyzerTest(TestCase):
             },
         ])
 
-        analyzer = CallAnalyzer(internal_numbers={'163'})
+        analyzer = CallAnalyzer(
+            internal_numbers={'163'},
+            extension_numbers={'163'},
+            display_names={'163': 'Standard'},
+        )
         calls = analyzer.process_dataframe(df)
         result = analyzer.to_dataframe(calls)
 
@@ -66,14 +70,14 @@ class CallAnalyzerTest(TestCase):
         self.assertEqual(result.iloc[0]['billsec'], 42)
         self.assertEqual(
             result.iloc[0]['path'],
-            'Externe 0123456789 --> Extension 163 (ANSWERED) --> Externe 0612345678 (ANSWERED)',
+            'Externe 0123456789 --> Extension Standard (163) (ANSWERED) --> Externe 0612345678 (ANSWERED)',
         )
         self.assertEqual(
-            [(step['number'], step['type'], step['disposition']) for step in result.iloc[0]['path_details']],
+            [(step['number'], step.get('display'), step['type'], step['disposition']) for step in result.iloc[0]['path_details']],
             [
-                ('0123456789', 'source', None),
-                ('163', 'external', 'ANSWERED'),
-                ('0612345678', 'forward_answered', 'ANSWERED'),
+                ('0123456789', None, 'source', None),
+                ('163', 'Standard', 'external', 'ANSWERED'),
+                ('0612345678', None, 'forward_answered', 'ANSWERED'),
             ],
         )
 
@@ -111,21 +115,56 @@ class CallAnalyzerTest(TestCase):
             },
         ])
 
-        analyzer = CallAnalyzer(internal_numbers={'101', '600'}, ring_group_numbers={'600'})
+        analyzer = CallAnalyzer(
+            internal_numbers={'101', '600'},
+            ring_group_numbers={'600'},
+            extension_numbers={'101'},
+            display_names={'101': 'Alice Martin', '600': 'Support'},
+        )
         calls = analyzer.process_dataframe(df)
         result = analyzer.to_dataframe(calls)
 
         self.assertEqual(len(result), 1)
         self.assertEqual(
             result.iloc[0]['path'],
-            'Externe 0123456789 --> Ring group 600 (ANSWERED) --> Extension 101 (ANSWERED)',
+            'Externe 0123456789 --> Ring group Support (600) (ANSWERED) --> Extension Alice Martin (101) (ANSWERED)',
         )
         self.assertEqual(
-            [(step['number'], step['type'], step['entity_type'], step['disposition'])
+            [(step['number'], step.get('display'), step['type'], step['entity_type'], step['disposition'])
              for step in result.iloc[0]['path_details']],
             [
-                ('0123456789', 'source', 'external', None),
-                ('600', 'ring_group', 'ring_group', 'ANSWERED'),
-                ('101', 'group_member_answered', 'extension', 'ANSWERED'),
+                ('0123456789', None, 'source', 'external', None),
+                ('600', 'Support', 'ring_group', 'ring_group', 'ANSWERED'),
+                ('101', 'Alice Martin', 'group_member_answered', 'extension', 'ANSWERED'),
             ],
+        )
+
+    def test_path_does_not_label_unknown_internal_number_as_extension(self):
+        df = pd.DataFrame([
+            {
+                'calldate': datetime(2026, 5, 12, 12, 0, 0),
+                'uniqueid': 'call-3.1',
+                'linkedid': 'call-3',
+                'src': '101',
+                'dst': '777',
+                'channel': 'PJSIP/101-00000001',
+                'dstchannel': 'PJSIP/777-00000002',
+                'disposition': 'NO ANSWER',
+                'cnum': '101',
+                'billsec': 0,
+                'sequence': 1,
+                'context': 'from-internal',
+                'lastapp': 'Dial',
+            },
+        ])
+
+        analyzer = CallAnalyzer(internal_numbers={'101', '777'}, extension_numbers={'101'})
+        calls = analyzer.process_dataframe(df)
+        result = analyzer.to_dataframe(calls)
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result.iloc[0]['path'], 'Extension 101 --> Interne 777 (NO ANSWER)')
+        self.assertEqual(
+            [(step['number'], step['entity_type']) for step in result.iloc[0]['path_details']],
+            [('101', 'extension'), ('777', 'internal_number')],
         )

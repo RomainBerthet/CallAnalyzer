@@ -46,6 +46,7 @@ class CDRAnalyzerApp:
         )
         self.reference_numbers = config.get('reference_numbers', [])
         self.internal_numbers = set()
+        self.extension_numbers = set()
         self.ring_group_numbers = set()
         self.extensions_dict = {}
 
@@ -56,8 +57,9 @@ class CDRAnalyzerApp:
             result = self.gql_connector.execute_gql_query(query)
             extensions = list(map(lambda x: x['extensionId'], result['fetchAllExtensions']['extension']))
             ring_groups = list(map(lambda x: str(x['groupNumber']), result['fetchAllRingGroups']['ringgroups']))
+            self.extension_numbers = set(extensions)
             self.ring_group_numbers = set(ring_groups)
-            self.internal_numbers = set(extensions).union(self.ring_group_numbers)
+            self.internal_numbers = self.extension_numbers.union(self.ring_group_numbers)
             logger.info(f"Chargement réussi de {len(self.internal_numbers)} numéros internes")
             result_extensions_dict = result['fetchAllExtensions']['extension']
             df = pd.json_normalize(result_extensions_dict)
@@ -68,6 +70,7 @@ class CDRAnalyzerApp:
         except Exception as e:
             logger.error(f"Erreur lors du chargement des numéros internes: {e}")
             self.internal_numbers = set()
+            self.extension_numbers = set()
             self.ring_group_numbers = set()
             self.extensions_dict = {}
 
@@ -99,7 +102,13 @@ class CDRAnalyzerApp:
             return None, None
 
         # Analyse des appels
-        analyzer = CallAnalyzer(self.internal_numbers, self.reference_numbers, self.ring_group_numbers)
+        analyzer = CallAnalyzer(
+            self.internal_numbers,
+            self.reference_numbers,
+            self.ring_group_numbers,
+            self.extension_numbers,
+            self.extensions_dict,
+        )
         calls = analyzer.process_dataframe(df_calls)
 
         if not calls:

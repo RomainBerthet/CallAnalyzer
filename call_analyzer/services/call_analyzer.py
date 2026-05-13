@@ -1,7 +1,7 @@
 import logging
 import re
 from datetime import timedelta
-from typing import List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 
@@ -15,10 +15,17 @@ class CallAnalyzer:
     """Analyse les données d'appels pour extraire des informations pertinentes."""
 
     def __init__(self, internal_numbers: Set[str], reference_numbers: Optional[List[str]] = None,
-                 ring_group_numbers: Optional[Set[str]] = None):
+                 ring_group_numbers: Optional[Set[str]] = None, extension_numbers: Optional[Set[str]] = None,
+                 display_names: Optional[Dict[str, str]] = None):
         self.internal_numbers = {str(number) for number in internal_numbers}
         self.reference_numbers = reference_numbers
         self.ring_group_numbers = {str(number) for number in ring_group_numbers} if ring_group_numbers else set()
+        self.extension_numbers = {str(number) for number in extension_numbers} if extension_numbers else set()
+        self.display_names = {
+            str(number): display
+            for number, display in (display_names or {}).items()
+            if display
+        }
         # Compile once — used many times per analysis run
         self._channel_patterns = [
             re.compile(r'PJSIP/(\d+)-'),
@@ -33,19 +40,34 @@ class CallAnalyzer:
     def _is_ring_group_number(self, number: str) -> bool:
         return str(number) in self.ring_group_numbers
 
+    def _is_extension_number(self, number: str) -> bool:
+        return str(number) in self.extension_numbers
+
     def _get_path_entity_type(self, number: str, call_type: str) -> str:
         if self._is_ring_group_number(number):
             return 'ring_group'
-        if call_type in ('group_member', 'group_member_answered') or self._is_internal_number(number):
+        if self._is_extension_number(number):
             return 'extension'
+        if call_type in ('group_member', 'group_member_answered'):
+            return 'group_member'
+        if self._is_internal_number(number):
+            return 'internal_number'
         return 'external'
+
+    def _get_path_display(self, number: str) -> Optional[str]:
+        return self.display_names.get(str(number))
 
     def _format_path_label(self, number: str, call_type: str, disposition: str = None) -> str:
         entity_type = self._get_path_entity_type(number, call_type)
+        display = self._get_path_display(number)
         if entity_type == 'ring_group':
-            label = f"Ring group {number}"
+            label = f"Ring group {display} ({number})" if display else f"Ring group {number}"
         elif entity_type == 'extension':
-            label = f"Extension {number}"
+            label = f"Extension {display} ({number})" if display else f"Extension {number}"
+        elif entity_type == 'group_member':
+            label = f"Membre groupe {number}"
+        elif entity_type == 'internal_number':
+            label = f"Interne {number}"
         else:
             label = f"Externe {number}"
 
@@ -261,6 +283,7 @@ class CallAnalyzer:
                 last_path_key = path_key
                 call_path_details.append({
                     'number': number,
+                    'display': self._get_path_display(number),
                     'type': call_type,
                     'entity_type': self._get_path_entity_type(number, call_type),
                     'disposition': disposition,
@@ -425,6 +448,7 @@ class CallAnalyzer:
                 )
                 path_details = [{
                     'number': src_ctc,
+                    'display': self._get_path_display(src_ctc),
                     'type': 'source',
                     'entity_type': self._get_path_entity_type(src_ctc, 'source'),
                     'disposition': None,
@@ -432,6 +456,7 @@ class CallAnalyzer:
                 path_details.extend(
                     {
                         'number': item.split(' ')[0],
+                        'display': self._get_path_display(item.split(' ')[0]),
                         'type': 'click_to_call_answered',
                         'entity_type': self._get_path_entity_type(item.split(' ')[0], 'click_to_call_answered'),
                         'disposition': 'ANSWERED',
@@ -440,6 +465,7 @@ class CallAnalyzer:
                 )
                 path_details.append({
                     'number': dst_ctc,
+                    'display': self._get_path_display(dst_ctc),
                     'type': 'destination',
                     'entity_type': self._get_path_entity_type(dst_ctc, 'destination'),
                     'disposition': 'ANSWERED' if dst_answered else None,
@@ -447,6 +473,7 @@ class CallAnalyzer:
                 path_details.extend(
                     {
                         'number': item.split(' ')[0],
+                        'display': self._get_path_display(item.split(' ')[0]),
                         'type': 'forward_answered',
                         'entity_type': self._get_path_entity_type(item.split(' ')[0], 'forward_answered'),
                         'disposition': 'ANSWERED',
