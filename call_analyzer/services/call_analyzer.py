@@ -290,18 +290,6 @@ class CallAnalyzer:
                     'timestamp': timestamp.isoformat() if hasattr(timestamp, 'isoformat') else timestamp,
                 })
 
-        def mark_as_transit(number: str, call_type: str = 'forward_source'):
-            if not number:
-                return
-            for index in range(len(call_path_details) - 1, -1, -1):
-                if str(call_path_details[index].get('number')) == str(number):
-                    call_path_details[index]['type'] = call_type
-                    call_path_details[index]['entity_type'] = self._get_path_entity_type(number, call_type)
-                    call_path_details[index]['disposition'] = None
-                    path[index] = self._format_path_label(number, call_type)
-                    return
-            add_to_path(number, call_type)
-
         # Première passe: groupes et appels internes
         for event in events:
             is_local = event.dstchannel and 'Local/' in event.dstchannel
@@ -361,33 +349,28 @@ class CallAnalyzer:
                     add_to_path(dst_number, call_type, event.disposition, timestamp=event.timestamp)
 
             if event.context == 'followme-check' and event.dstchannel and 'Local/' in event.dstchannel:
+                if event.dst:
+                    add_to_path(event.dst, 'forward_source', None, timestamp=event.timestamp)
                 local_key = event.dstchannel.split(';')[0]
                 match = next(
                     (e for e in events if e.channel and e.channel.startswith(local_key) and e.context == 'from-internal'),
                     None
                 )
                 if match:
-                    if event.dst:
-                        mark_as_transit(event.dst, 'forward_source')
                     fwd_number = self._extract_number_from_channel(match.dstchannel) or match.dst
                     if not forwards_to:
                         forwards_to = fwd_number
-                    add_to_path(fwd_number, 'forwarded', match.disposition, timestamp=match.timestamp)
-                    virtual_forward = fwd_number
                     if event.disposition == 'ANSWERED':
+                        add_to_path(fwd_number, 'forwarded', match.disposition, timestamp=match.timestamp)
+                        virtual_forward = fwd_number
                         continue
 
             if event.context == 'from-internal':
                 if event.channel and 'Local/0' in event.channel:
                     if not forwards_to:
                         forwards_to = dst_number
-                    mark_as_transit(event.src, 'forward_source')
-                    add_to_path(
-                        dst_number,
-                        'forward_answered' if event.disposition == 'ANSWERED' else 'forwarded',
-                        event.disposition,
-                        timestamp=event.timestamp
-                    )
+                    if event.disposition == 'ANSWERED':
+                        add_to_path(dst_number, 'forward_answered', event.disposition, timestamp=event.timestamp)
                     virtual_forward = dst_number
                 elif 'Local/' in event.channel and not is_local:
                     if not transfers_to and dst_number:
@@ -448,20 +431,11 @@ class CallAnalyzer:
             if src_ctc and dst_ctc:
                 is_both_internal = self._is_internal_number(src_ctc) and self._is_internal_number(dst_ctc)
                 # La destination a-t-elle décroché directement (pas via un renvoi) ?
-                # En click-to-call, la jambe ;2 correspond à l'initiateur et la jambe ;1 à la destination.
-                # Une réponse sur le renvoi mobile de l'initiateur ne doit donc pas marquer dst_ctc comme répondu.
-                ctc_base = events[0].channel.rsplit(';', 1)[0]
+                first_ev = events[0]
                 dst_answered = (
-                    not dest_forwards
-                    and any(
-                        e.disposition == 'ANSWERED'
-                        and e.channel
-                        and e.channel.endswith(';1')
-                        and e.channel.rsplit(';', 1)[0] == ctc_base
-                        and e.dstchannel
-                        and 'Local/' not in e.dstchannel
-                        for e in events
-                    )
+                    first_ev.disposition == 'ANSWERED'
+                    and bool(first_ev.dstchannel)
+                    and 'Local/' not in first_ev.dstchannel
                 )
                 # Structure : initiateur --> [appareil répondant] --> destination --> [renvois destination]
                 path_parts = [self._format_path_label(src_ctc, 'source')]
