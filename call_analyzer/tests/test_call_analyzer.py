@@ -70,13 +70,13 @@ class CallAnalyzerTest(TestCase):
         self.assertEqual(result.iloc[0]['billsec'], 42)
         self.assertEqual(
             result.iloc[0]['path'],
-            'Externe 0123456789 --> Extension Standard (163) (ANSWERED) --> Externe 0612345678 (ANSWERED)',
+            'Externe 0123456789 --> Extension Standard (163) --> Externe 0612345678 (ANSWERED)',
         )
         self.assertEqual(
             [(step['number'], step.get('display'), step['type'], step['disposition']) for step in result.iloc[0]['path_details']],
             [
                 ('0123456789', None, 'source', None),
-                ('163', 'Standard', 'external', 'ANSWERED'),
+                ('163', 'Standard', 'forward_source', None),
                 ('0612345678', None, 'forward_answered', 'ANSWERED'),
             ],
         )
@@ -315,5 +315,176 @@ class CallAnalyzerTest(TestCase):
                 ('0600000001', None, 'click_to_call_answered', 'external', 'ANSWERED'),
                 ('130', 'Thomas CHAPOTIN', 'destination', 'extension', None),
                 ('0666828301', None, 'forward_answered', 'external', 'ANSWERED'),
+            ],
+        )
+
+    def test_answered_forward_normalizes_initial_no_answer_extension_as_transit(self):
+        df = pd.DataFrame([
+            {
+                'calldate': datetime(2026, 5, 12, 15, 0, 0),
+                'uniqueid': 'call-6.1',
+                'linkedid': 'call-6',
+                'src': '0633453729',
+                'dst': '163',
+                'channel': 'PJSIP/trunk-in-00000001',
+                'dstchannel': 'Local/163@from-trunk-00000002;1',
+                'disposition': 'NO ANSWER',
+                'cnum': '0633453729',
+                'billsec': 0,
+                'sequence': 1,
+                'context': 'from-trunk',
+                'lastapp': 'Dial',
+            },
+            {
+                'calldate': datetime(2026, 5, 12, 15, 0, 1),
+                'uniqueid': 'call-6.2',
+                'linkedid': 'call-6',
+                'src': '163',
+                'dst': '0633453729',
+                'channel': 'Local/0@from-internal-00000003;1',
+                'dstchannel': 'PJSIP/trunk-out-00000004',
+                'disposition': 'ANSWERED',
+                'cnum': '0633453729',
+                'billsec': 23,
+                'sequence': 2,
+                'context': 'from-internal',
+                'lastapp': 'Dial',
+            },
+        ])
+
+        analyzer = CallAnalyzer(
+            internal_numbers={'163'},
+            extension_numbers={'163'},
+            display_names={'163': 'Romain BERTHET'},
+        )
+        calls = analyzer.process_dataframe(df)
+        result = analyzer.to_dataframe(calls)
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(
+            result.iloc[0]['path'],
+            'Externe 0633453729 --> Extension Romain BERTHET (163) --> Externe 0633453729 (ANSWERED)',
+        )
+        self.assertEqual(
+            [(step['number'], step.get('display'), step['type'], step['entity_type'], step['disposition'])
+             for step in result.iloc[0]['path_details']],
+            [
+                ('0633453729', None, 'source', 'external', None),
+                ('163', 'Romain BERTHET', 'forward_source', 'extension', None),
+                ('0633453729', None, 'forward_answered', 'external', 'ANSWERED'),
+            ],
+        )
+
+    def test_unanswered_local_forward_keeps_external_attempt_in_path(self):
+        df = pd.DataFrame([
+            {
+                'calldate': datetime(2026, 5, 12, 16, 0, 0),
+                'uniqueid': 'call-7.1',
+                'linkedid': 'call-7',
+                'src': '0380262300',
+                'dst': '163',
+                'channel': 'PJSIP/trunk-in-00000001',
+                'dstchannel': 'Local/163@from-trunk-00000002;1',
+                'disposition': 'NO ANSWER',
+                'cnum': '0380262300',
+                'billsec': 0,
+                'sequence': 1,
+                'context': 'from-trunk',
+                'lastapp': 'Dial',
+            },
+            {
+                'calldate': datetime(2026, 5, 12, 16, 0, 1),
+                'uniqueid': 'call-7.2',
+                'linkedid': 'call-7',
+                'src': '163',
+                'dst': '0633453729',
+                'channel': 'Local/0@from-internal-00000003;1',
+                'dstchannel': 'PJSIP/trunk-out-00000004',
+                'disposition': 'NO ANSWER',
+                'cnum': '0380262300',
+                'billsec': 0,
+                'sequence': 2,
+                'context': 'from-internal',
+                'lastapp': 'Dial',
+            },
+        ])
+
+        analyzer = CallAnalyzer(
+            internal_numbers={'163'},
+            extension_numbers={'163'},
+            display_names={'163': 'Romain BERTHET'},
+        )
+        calls = analyzer.process_dataframe(df)
+        result = analyzer.to_dataframe(calls)
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(
+            result.iloc[0]['path'],
+            'Externe 0380262300 --> Extension Romain BERTHET (163) --> Externe 0633453729 (NO ANSWER)',
+        )
+        self.assertEqual(
+            [(step['number'], step.get('display'), step['type'], step['entity_type'], step['disposition'])
+             for step in result.iloc[0]['path_details']],
+            [
+                ('0380262300', None, 'source', 'external', None),
+                ('163', 'Romain BERTHET', 'forward_source', 'extension', None),
+                ('0633453729', None, 'forwarded', 'external', 'NO ANSWER'),
+            ],
+        )
+
+    def test_unanswered_followme_keeps_forward_source_and_external_attempt(self):
+        df = pd.DataFrame([
+            {
+                'calldate': datetime(2026, 5, 12, 17, 0, 0),
+                'uniqueid': 'call-8.1',
+                'linkedid': 'call-8',
+                'src': '117',
+                'dst': '130',
+                'channel': 'PJSIP/117-00000001',
+                'dstchannel': 'Local/0666828301@from-internal-00000002;1',
+                'disposition': 'NO ANSWER',
+                'cnum': '117',
+                'billsec': 0,
+                'sequence': 1,
+                'context': 'followme-check',
+                'lastapp': 'Dial',
+            },
+            {
+                'calldate': datetime(2026, 5, 12, 17, 0, 1),
+                'uniqueid': 'call-8.2',
+                'linkedid': 'call-8',
+                'src': '130',
+                'dst': '0666828301',
+                'channel': 'Local/0666828301@from-internal-00000002;1',
+                'dstchannel': 'PJSIP/trunk-out-00000003',
+                'disposition': 'NO ANSWER',
+                'cnum': '117',
+                'billsec': 0,
+                'sequence': 2,
+                'context': 'from-internal',
+                'lastapp': 'Dial',
+            },
+        ])
+
+        analyzer = CallAnalyzer(
+            internal_numbers={'117', '130'},
+            extension_numbers={'117', '130'},
+            display_names={'117': 'Baptiste GODARD', '130': 'Thomas CHAPOTIN'},
+        )
+        calls = analyzer.process_dataframe(df)
+        result = analyzer.to_dataframe(calls)
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(
+            result.iloc[0]['path'],
+            'Extension Baptiste GODARD (117) --> Extension Thomas CHAPOTIN (130) --> Externe 0666828301 (NO ANSWER)',
+        )
+        self.assertEqual(
+            [(step['number'], step.get('display'), step['type'], step['entity_type'], step['disposition'])
+             for step in result.iloc[0]['path_details']],
+            [
+                ('117', 'Baptiste GODARD', 'source', 'extension', None),
+                ('130', 'Thomas CHAPOTIN', 'forward_source', 'extension', None),
+                ('0666828301', None, 'forwarded', 'external', 'NO ANSWER'),
             ],
         )
